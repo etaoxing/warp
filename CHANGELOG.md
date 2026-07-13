@@ -56,6 +56,9 @@
   group ([GH-1612](https://github.com/NVIDIA/warp/issues/1612)).
 - Fix `wp.quat_twist_angle()` losing precision for small `wp.float32` rotations
   ([GH-1631](https://github.com/NVIDIA/warp/issues/1631)).
+- Fix `wp.tile_load_indexed()` reading out of bounds for a negative gather index. Negative indices now predicate the
+  loaded element to zero, matching indices past the end of the axis, so `-1` can serve as a padding sentinel for
+  masked gathers ([GH-1653](https://github.com/NVIDIA/warp/issues/1653)).
 
 ### Documentation
 
