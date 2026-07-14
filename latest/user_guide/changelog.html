@@ -516,6 +516,8 @@ external profiler’s capture range. They accept an optional <code class="docuti
 context (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1596">GH-1596</a>).</p></li>
 <li><p>Add <code class="docutils literal notranslate"><span class="pre">wp.Stream.is_blocking</span></code> to report whether a CUDA stream is blocking
 (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1618">GH-1618</a>).</p></li>
+<li><p>Add adjoint for the out-of-place <code class="docutils literal notranslate"><span class="pre">wp.tile_lower_solve()</span></code> for vector and matrix right-hand sides
+(<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1378">GH-1378</a>)</p></li>
 </ul>
 </section>
 <section id="removed">
@@ -531,6 +533,11 @@ context (<a class="reference external" href="https://github.com/NVIDIA/warp/issu
 </section>
 <section id="changed">
 <h3>Changed<a class="headerlink" href="#changed" title="Link to this heading">#</a></h3>
+<ul class="simple">
+<li><p>Improve diagnostics for array copy, texture copy, array reshape/view, and unsupported DLPack source-device errors by
+reporting the relevant shapes, data types, channels, or device identifiers
+(<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1644">GH-1644</a>).</p></li>
+</ul>
 </section>
 <section id="fixed">
 <h3>Fixed<a class="headerlink" href="#fixed" title="Link to this heading">#</a></h3>
@@ -556,6 +563,15 @@ accumulated state (<a class="reference external" href="https://github.com/NVIDIA
 group (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1612">GH-1612</a>).</p></li>
 <li><p>Fix <code class="docutils literal notranslate"><span class="pre">wp.quat_twist_angle()</span></code> losing precision for small <code class="docutils literal notranslate"><span class="pre">wp.float32</span></code> rotations
 (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1631">GH-1631</a>).</p></li>
+<li><p>Fix tuple-unpack assignment to <code class="docutils literal notranslate"><span class="pre">wp.ref[T]</span></code> parameters (e.g. <code class="docutils literal notranslate"><span class="pre">x,</span> <span class="pre">y</span> <span class="pre">=</span> <span class="pre">a,</span> <span class="pre">b</span></code>) so it mutates the caller’s storage like
+sequential assignment instead of raising a type error (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1581">GH-1581</a>).</p></li>
+<li><p>Fix CPU modules with different <code class="docutils literal notranslate"><span class="pre">cpu_compiler_flags</span></code> reusing incompatible precompiled headers, avoiding Clang
+target-feature errors and fallback compilation (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1649">GH-1649</a>).</p></li>
+<li><p>Fix heap corruption when capturing <code class="docutils literal notranslate"><span class="pre">wp.sparse.bsr_set_transpose()</span></code> with <code class="docutils literal notranslate"><span class="pre">topology=&quot;padded&quot;</span></code>
+into a destination without enough row capacity
+(<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1630">GH-1630</a>).</p></li>
+<li><p>Fix an illegal memory access on CUDA when a variable is reassigned inside nested <code class="docutils literal notranslate"><span class="pre">if</span></code>/<code class="docutils literal notranslate"><span class="pre">else</span></code> branches
+(<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1574">GH-1574</a>).</p></li>
 </ul>
 </section>
 <section id="documentation">
@@ -563,6 +579,10 @@ group (<a class="reference external" href="https://github.com/NVIDIA/warp/issues
 <ul class="simple">
 <li><p>Document working with non-blocking CUDA streams, including streams borrowed from PyTorch
 (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1618">GH-1618</a>).</p></li>
+<li><p>Add an example of a distributed Jacobi solver that uses NCCL (via <code class="docutils literal notranslate"><span class="pre">nccl4py</span></code>) for nearest-neighbor halo exchange in
+<code class="docutils literal notranslate"><span class="pre">warp/examples/distributed/example_jacobi_nccl.py</span></code> (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1576">GH-1576</a>).</p></li>
+<li><p>Add an example of a distributed Jacobi solver that uses NVSHMEM (via <code class="docutils literal notranslate"><span class="pre">nvshmem4py</span></code>) for nearest-neighbor halo exchange
+in <code class="docutils literal notranslate"><span class="pre">warp/examples/distributed/example_jacobi_nvshmem.py</span></code> (<a class="reference external" href="https://github.com/NVIDIA/warp/issues/1582">GH-1582</a>).</p></li>
 </ul>
 </section>
 </section>
