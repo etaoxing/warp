@@ -85,6 +85,8 @@
   and a backward-enabled kernel in the same module.
 - Fix compilation failures when calling `warp.fem.lookup()` with double-precision (`wp.float64`) geometries
   ([GH-1660](https://github.com/NVIDIA/warp/issues/1660)).
+- Fix `wp.func_grad()` raising `KeyError: 'output_arch'` when the function being given a custom gradient
+  uses `wp.tile_matmul()` or other MathDx tile built-ins.
 
 ### Documentation
 
