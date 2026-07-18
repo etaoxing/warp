@@ -63,7 +63,7 @@
 #define CHECK_CUBLASDX(code) \
 { \
     do { \
-        bool out = (check_cufftdx(code)); \
+        bool out = (check_cublasdx(code)); \
         if(!out) { \
             return out; \
         } \
