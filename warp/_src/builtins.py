@@ -14653,6 +14653,40 @@ def tile_matmul_lto_dispatch_func(
             else:
                 raise ValueError(f"unexpected layout {layout!r}")
 
+        def gemm_operand_ld(t):
+            # Derive (arrangement, leading dimension) from the tile's strides.
+            # Returns None if the strides do not fit a leading dimension,
+            # e.g. a broadcast tile with a zero stride.
+            rows, cols = t.shape
+            s0, s1 = t.strides
+            row_ld = s0 if (s1 == 1 and s0 >= cols) else None
+            col_ld = s1 if (s0 == 1 and s1 >= rows) else None
+            # a single row or column fits both; prefer the tile's layout tag
+            if t.layout == "colmajor":
+                pairs = (("colmajor", col_ld), ("rowmajor", row_ld))
+            else:
+                pairs = (("rowmajor", row_ld), ("colmajor", col_ld))
+            for arrangement, ld in pairs:
+                if ld is not None:
+                    return (arrangement, ld)
+            return None
+
+        # derive each operand's arrangement and leading dimension from its strides,
+        # so non-dense operands (e.g. a tile_view into a wider tile) are read correctly
+        operands = []
+        for t in (a.type, b.type, out.type):
+            derived = gemm_operand_ld(t)
+            if derived is None:
+                # fall back to the scalar GEMM, which handles arbitrary strides
+                log_warning(
+                    f"tile_matmul() operand with shape={tuple(t.shape)} strides={tuple(t.strides)} "
+                    "cannot be expressed as a cuBLASDx leading dimension; using the scalar GEMM path."
+                )
+                return ((0, 0, 0, a, b, out, alpha, beta), (), [], 0)
+            operands.append(derived)
+
+        (arr_a, ld_a), (arr_b, ld_b), (arr_c, ld_c) = operands
+
         # generate the LTOs
         #    C += A * B
         (fun_forward, lto_forward) = warp._src.build.build_lto_dot(
@@ -14662,12 +14696,15 @@ def tile_matmul_lto_dispatch_func(
             a.type.dtype,
             b.type.dtype,
             out.type.dtype,
-            a.type.layout,
-            b.type.layout,
-            out.type.layout,
+            arr_a,
+            arr_b,
+            arr_c,
             arch,
             num_threads,
             builder,
+            lda=ld_a,
+            ldb=ld_b,
+            ldc=ld_c,
         )
         if options["enable_backward"]:
             # adjA += adjC * B^T - Transpose ~= flipped layout
@@ -14678,12 +14715,15 @@ def tile_matmul_lto_dispatch_func(
                 out.type.dtype,
                 b.type.dtype,
                 a.type.dtype,
-                out.type.layout,
-                tile_flip_layout(b.type.layout),
-                a.type.layout,
+                arr_c,
+                tile_flip_layout(arr_b),
+                arr_a,
                 arch,
                 num_threads,
                 builder,
+                lda=ld_c,
+                ldb=ld_b,
+                ldc=ld_a,
             )
             # adjB += A^T * adjC - Transpose ~= flipped layout
             (fun_backward_B, lto_backward_B) = warp._src.build.build_lto_dot(
@@ -14693,12 +14733,15 @@ def tile_matmul_lto_dispatch_func(
                 a.type.dtype,
                 out.type.dtype,
                 b.type.dtype,
-                tile_flip_layout(a.type.layout),
-                out.type.layout,
-                b.type.layout,
+                tile_flip_layout(arr_a),
+                arr_c,
+                arr_b,
                 arch,
                 num_threads,
                 builder,
+                lda=ld_a,
+                ldb=ld_c,
+                ldc=ld_b,
             )
         else:
             # adjoints aren't computed, so we reuse fun_forward as a dummy arg
