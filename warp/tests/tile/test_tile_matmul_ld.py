@@ -17,7 +17,7 @@ TILE_DIM = 32
 
 
 @wp.kernel
-def tile_matmul_strided_view_kernel(A: wp.array2d(dtype=float), B: wp.array2d(dtype=float), C: wp.array2d(dtype=float)):
+def tile_matmul_strided_view_kernel(A: wp.array2d[float], B: wp.array2d[float], C: wp.array2d[float]):
     # the view of the left half keeps the parent's row stride, so it is non-dense
     a_full = wp.tile_load(A, shape=(TILE_M, TILE_K2))
     a_sub = wp.tile_view(a_full, offset=(0, 0), shape=(TILE_M, TILE_K))
@@ -73,7 +73,7 @@ def test_tile_matmul_strided_view_backward(test, device):
 
 
 @wp.kernel
-def tile_matmul_broadcast_kernel(A: wp.array2d(dtype=float), B: wp.array2d(dtype=float), C: wp.array2d(dtype=float)):
+def tile_matmul_broadcast_kernel(A: wp.array2d[float], B: wp.array2d[float], C: wp.array2d[float]):
     # a zero-stride broadcast operand makes tile_matmul fall back to the scalar path
     a = wp.tile_load(A, shape=(TILE_M, TILE_K))
     b_row = wp.tile_load(B, shape=(1, TILE_N))
