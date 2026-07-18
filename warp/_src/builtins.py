@@ -14687,66 +14687,104 @@ def tile_matmul_lto_dispatch_func(
 
         (arr_a, ld_a), (arr_b, ld_b), (arr_c, ld_c) = operands
 
-        # generate the LTOs
-        #    C += A * B
-        (fun_forward, lto_forward) = warp._src.build.build_lto_dot(
-            M,
-            N,
-            K,
-            a.type.dtype,
-            b.type.dtype,
-            out.type.dtype,
-            arr_a,
-            arr_b,
-            arr_c,
-            arch,
-            num_threads,
-            builder,
-            lda=ld_a,
-            ldb=ld_b,
-            ldc=ld_c,
+        def dense_extent(arrangement, rows, cols):
+            return cols if arrangement == "rowmajor" else rows
+
+        gemm_is_dense = (
+            ld_a == dense_extent(arr_a, M, K)
+            and ld_b == dense_extent(arr_b, K, N)
+            and ld_c == dense_extent(arr_c, M, N)
         )
-        if options["enable_backward"]:
-            # adjA += adjC * B^T - Transpose ~= flipped layout
-            (fun_backward_A, lto_backward_A) = warp._src.build.build_lto_dot(
+
+        # cuBLASDx can reject a GEMM whose LTO bakes in explicit leading dimensions.
+        # Known case: NVBUG 5218000 (CUDA 12.8.0/12.8.1/12.9.0, fixed in 12.9.1),
+        # which affects configurations combining:
+        #   - a narrow precision (fp8, fp16, bf16, int8 -- not fp32/fp64)
+        #   - a size where any of M/N/K is not a multiple of 16
+        #   - a static LeadingDimension operator, under high register pressure
+        # cuBLASDx 0.4+ hard-fails these configurations with a static_assert.
+        #
+        # The compiler that matters is the one libmathdx embeds, which Python cannot
+        # detect, so for exactly these configurations a compile failure falls back to
+        # the scalar GEMM (on fixed toolchains the compile succeeds and keeps the
+        # cuBLASDx path). Any other failure is a genuine error and raises.
+        nvbug_5218000_risk = (
+            not gemm_is_dense
+            and any(t.dtype in (float16, bfloat16, vec2h) for t in (a.type, b.type, out.type))
+            and any(dim % 16 != 0 for dim in (M, N, K))
+        )
+
+        prior_lto_symbols = set(builder.ltoirs)
+        try:
+            # generate the LTOs
+            #    C += A * B
+            (fun_forward, lto_forward) = warp._src.build.build_lto_dot(
                 M,
-                K,
                 N,
-                out.type.dtype,
-                b.type.dtype,
+                K,
                 a.type.dtype,
-                arr_c,
-                tile_flip_layout(arr_b),
+                b.type.dtype,
+                out.type.dtype,
                 arr_a,
-                arch,
-                num_threads,
-                builder,
-                lda=ld_c,
-                ldb=ld_b,
-                ldc=ld_a,
-            )
-            # adjB += A^T * adjC - Transpose ~= flipped layout
-            (fun_backward_B, lto_backward_B) = warp._src.build.build_lto_dot(
-                K,
-                N,
-                M,
-                a.type.dtype,
-                out.type.dtype,
-                b.type.dtype,
-                tile_flip_layout(arr_a),
-                arr_c,
                 arr_b,
+                arr_c,
                 arch,
                 num_threads,
                 builder,
                 lda=ld_a,
-                ldb=ld_c,
-                ldc=ld_b,
+                ldb=ld_b,
+                ldc=ld_c,
             )
-        else:
-            # adjoints aren't computed, so we reuse fun_forward as a dummy arg
-            (fun_backward_A, lto_backward_A) = (fun_forward, None)
-            (fun_backward_B, lto_backward_B) = (fun_forward, None)
+            if options["enable_backward"]:
+                # adjA += adjC * B^T - Transpose ~= flipped layout
+                (fun_backward_A, lto_backward_A) = warp._src.build.build_lto_dot(
+                    M,
+                    K,
+                    N,
+                    out.type.dtype,
+                    b.type.dtype,
+                    a.type.dtype,
+                    arr_c,
+                    tile_flip_layout(arr_b),
+                    arr_a,
+                    arch,
+                    num_threads,
+                    builder,
+                    lda=ld_c,
+                    ldb=ld_b,
+                    ldc=ld_a,
+                )
+                # adjB += A^T * adjC - Transpose ~= flipped layout
+                (fun_backward_B, lto_backward_B) = warp._src.build.build_lto_dot(
+                    K,
+                    N,
+                    M,
+                    a.type.dtype,
+                    out.type.dtype,
+                    b.type.dtype,
+                    tile_flip_layout(arr_a),
+                    arr_c,
+                    arr_b,
+                    arch,
+                    num_threads,
+                    builder,
+                    lda=ld_a,
+                    ldb=ld_c,
+                    ldc=ld_b,
+                )
+            else:
+                # adjoints aren't computed, so we reuse fun_forward as a dummy arg
+                (fun_backward_A, lto_backward_A) = (fun_forward, None)
+                (fun_backward_B, lto_backward_B) = (fun_forward, None)
+        except RuntimeError as err:
+            if not nvbug_5218000_risk:
+                raise
+            # unregister LTOs added by the calls above that did succeed
+            for symbol in set(builder.ltoirs) - prior_lto_symbols:
+                builder.ltoirs.pop(symbol, None)
+                builder.ltoirs_decl.pop(symbol, None)
+            log_warning(f"tile_matmul() falling back to the scalar GEMM path: {err}")
+            return ((0, 0, 0, a, b, out, alpha, beta), (), [], 0)
 
         return (
             (

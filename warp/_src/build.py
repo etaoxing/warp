@@ -491,8 +491,8 @@ def build_lto_dot(
         ldc = dense_lds[2]
 
     # Pass zeros for dense strides, leaving the LeadingDimension operator unset.
-    # cuBLASDx validates an explicit LeadingDimension more strictly than the default,
-    # e.g. the NVBUG 5218000 static_assert on CUDA < 12.9.1.
+    # cuBLASDx validates an explicit LeadingDimension more strictly than the default;
+    # see the fallback in the tile_matmul dispatch.
     native_lds = (0, 0, 0) if (lda, ldb, ldc) == dense_lds else (lda, ldb, ldc)
 
     lto_symbol = f"dot_{M}_{N}_{K}_{arch}_{num_threads}_{a_arrangement}_{b_arrangement}_{c_arrangement}_{a_prec}_{b_prec}_{c_prec}_{element_type}"
