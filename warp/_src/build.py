@@ -495,10 +495,10 @@ def build_lto_dot(
     # e.g. the NVBUG 5218000 static_assert on CUDA < 12.9.1.
     native_lds = (0, 0, 0) if (lda, ldb, ldc) == dense_lds else (lda, ldb, ldc)
 
-    lto_symbol = (
-        f"dot_{M}_{N}_{K}_{arch}_{num_threads}_{a_arrangement}_{b_arrangement}_{c_arrangement}"
-        f"_{a_prec}_{b_prec}_{c_prec}_{element_type}_{lda}_{ldb}_{ldc}"
-    )
+    lto_symbol = f"dot_{M}_{N}_{K}_{arch}_{num_threads}_{a_arrangement}_{b_arrangement}_{c_arrangement}_{a_prec}_{b_prec}_{c_prec}_{element_type}"
+    # dense GEMMs keep the pre-existing symbol, so their cached LTOs stay valid
+    if (lda, ldb, ldc) != dense_lds:
+        lto_symbol += f"_{lda}_{ldb}_{ldc}"
 
     def compile_lto_dot(temp_paths):
         result = warp._src.context.runtime.core.wp_cuda_compile_dot(
