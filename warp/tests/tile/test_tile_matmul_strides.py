@@ -136,21 +136,26 @@ def test_tile_matmul_broadcast_fallback(test, device):
     assert_np_equal(C_wp.numpy(), A @ np.broadcast_to(B, (TILE_K, TILE_N)), tol=1e-5)
 
 
-class TestTileMatmulLd(unittest.TestCase):
+class TestTileMatmulStrides(unittest.TestCase):
     pass
 
 
 devices = get_test_devices()
 
-add_function_test(TestTileMatmulLd, "test_tile_matmul_strided_view", test_tile_matmul_strided_view, devices=devices)
 add_function_test(
-    TestTileMatmulLd, "test_tile_matmul_strided_view_backward", test_tile_matmul_strided_view_backward, devices=devices
+    TestTileMatmulStrides, "test_tile_matmul_strided_view", test_tile_matmul_strided_view, devices=devices
 )
 add_function_test(
-    TestTileMatmulLd, "test_tile_matmul_strided_view_fp16", test_tile_matmul_strided_view_fp16, devices=devices
+    TestTileMatmulStrides,
+    "test_tile_matmul_strided_view_backward",
+    test_tile_matmul_strided_view_backward,
+    devices=devices,
 )
 add_function_test(
-    TestTileMatmulLd, "test_tile_matmul_broadcast_fallback", test_tile_matmul_broadcast_fallback, devices=devices
+    TestTileMatmulStrides, "test_tile_matmul_strided_view_fp16", test_tile_matmul_strided_view_fp16, devices=devices
+)
+add_function_test(
+    TestTileMatmulStrides, "test_tile_matmul_broadcast_fallback", test_tile_matmul_broadcast_fallback, devices=devices
 )
 
 if __name__ == "__main__":
