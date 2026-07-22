@@ -86,8 +86,13 @@ def tile_matmul_strided_view_fp16_kernel(
 
 
 def test_tile_matmul_strided_view_fp16(test, device):
-    # on toolchains where cuBLASDx rejects the explicit leading dimensions
-    # (NVBUG 5218000) this exercises the scalar fallback
+    """Verify FP16 tile matrix multiplication with a strided operand.
+
+    cuBLASDx 0.4.0 hard-fails this case under CUDA 12.8.0, 12.8.1,
+    and 12.9.0 (NVBUG 5218000), so Warp exercises the scalar fallback
+    on those versions. CUDA 12.9.1 is known to work. See:
+    https://docs.nvidia.com/cuda/cublasdx/0.4.0/release_notes.html#known-issues
+    """
     rng = np.random.default_rng(42)
     A = rng.standard_normal((TILE_M, 2 * TILE_K)).astype(np.float16)
     B = rng.standard_normal((TILE_K, TILE_N4)).astype(np.float16)
