@@ -3,6 +3,7 @@
 
 import ast
 import functools
+import gc
 import importlib
 import inspect
 import linecache
@@ -13,6 +14,7 @@ import tempfile
 import textwrap
 import types
 import unittest
+import weakref
 from typing import Any
 from unittest import mock
 
@@ -775,6 +777,168 @@ def test_error_mutating_constant_in_dynamic_loop(test, device):
     mats = wp.empty(1, dtype=wp.mat33d, device=device)
     wp.launch(dynamic_then_static_loop_kernel, dim=1, inputs=[mats], device=device)
     assert_np_equal(mats.numpy(), np.zeros((1, 3, 3)))
+
+
+@wp.kernel
+def for_iter_reused_redeclared_while(out: wp.array[wp.int32]):
+    acc = int(0)
+    for i in range(2):
+        acc = acc + i
+    i = int(0)
+    while i < 3:
+        acc = acc + 10
+        i = i + 1
+    out[0] = acc
+
+
+@wp.kernel
+def for_iter_reused_different_name(out: wp.array[wp.int32]):
+    acc = int(0)
+    for i in range(2):
+        acc = acc + i
+    j = int(0)
+    while j < 3:
+        acc = acc + 10
+        j = j + 1
+    out[0] = acc
+
+
+@wp.kernel
+def for_iter_reused_bounded_while(out: wp.array[wp.int32]):
+    s = int(0)
+    for i in range(2):
+        s = s + i
+    i = int(0)
+    k = int(0)
+    while k < 3:
+        i = i + 1
+        k = k + 1
+    out[0] = i
+
+
+@wp.kernel
+def for_iter_reused_augassign(out: wp.array[wp.int32]):
+    s = int(0)
+    for i in range(2):
+        s = s + i
+    i = int(0)
+    k = int(0)
+    while k < 3:
+        i += 1
+        k += 1
+    out[0] = i
+
+
+@wp.kernel
+def for_iter_reused_dynamic_for(n: int, out: wp.array[wp.int32]):
+    acc = int(0)
+    for i in range(2):
+        acc = acc + i
+    for i in range(n):
+        acc = acc + i
+    out[0] = acc
+
+
+@wp.kernel
+def for_iter_reused_reassign_in_dynamic_loop(n: int, out: wp.array[wp.int32]):
+    acc = int(0)
+    for i in range(3):
+        acc = acc + i
+    for d in range(n):
+        i = d * 2
+        acc = acc + i
+    out[0] = acc
+
+
+@wp.kernel
+def for_iter_mutated_reuse_self_ref(out: wp.array[wp.int32]):
+    s = int(0)
+    for i in range(2):
+        s = s + i
+    k = int(0)
+    while k < 3:
+        i = i + 1
+        k = k + 1
+    out[0] = i
+
+
+@wp.kernel
+def for_iter_mutated_reuse_augassign(out: wp.array[wp.int32]):
+    s = int(0)
+    for i in range(2):
+        s = s + i
+    k = int(0)
+    while k < 3:
+        i += 1
+        k += 1
+    out[0] = i
+
+
+@wp.kernel
+def for_iter_mutated_reuse_indirect(out: wp.array[wp.int32]):
+    s = int(0)
+    for i in range(2):
+        s = s + i
+    k = int(0)
+    while k < 3:
+        tmp = i
+        i = tmp + 1
+        k = k + 1
+    out[0] = i
+
+
+def test_for_iter_reused_in_dynamic_loop(test, device):
+    """Verify that re-declaring a static-loop index makes it a loop-carried dynamic local.
+
+    A name previously used as an unrolled ``range()`` index must behave as an ordinary local
+    after it is re-declared. These kernels cover reuse as a ``while`` induction variable,
+    augmented assignment, reuse as a dynamic ``for`` index, and reassignment to a fresh
+    per-iteration value. A fresh-name control verifies the expected result independently.
+    """
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_reused_redeclared_while, dim=1, inputs=[out], device=device)
+    assert_np_equal(out.numpy(), np.array([31], dtype=np.int32))
+
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_reused_different_name, dim=1, inputs=[out], device=device)
+    assert_np_equal(out.numpy(), np.array([31], dtype=np.int32))
+
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_reused_bounded_while, dim=1, inputs=[out], device=device)
+    assert_np_equal(out.numpy(), np.array([3], dtype=np.int32))
+
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_reused_augassign, dim=1, inputs=[out], device=device)
+    assert_np_equal(out.numpy(), np.array([3], dtype=np.int32))
+
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_reused_dynamic_for, dim=1, inputs=[3, out], device=device)
+    assert_np_equal(out.numpy(), np.array([4], dtype=np.int32))
+
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_reused_reassign_in_dynamic_loop, dim=1, inputs=[3, out], device=device)
+    assert_np_equal(out.numpy(), np.array([9], dtype=np.int32))
+
+
+def test_for_iter_mutated_reuse_in_dynamic_loop(test, device):
+    """Verify that mutating a leaked static-loop index carries its value across dynamic-loop iterations.
+
+    Each kernel starts with the unrolled loop's leaked value of ``i == 1`` and increments
+    it three times using a separate loop counter, so the dynamic loop always terminates.
+    The direct, augmented-assignment, and temporary-mediated forms must all produce
+    ``i == 4``; without loop-carried materialization, they produce ``i == 2``.
+    """
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_mutated_reuse_self_ref, dim=1, inputs=[out], device=device)
+    assert_np_equal(out.numpy(), np.array([4], dtype=np.int32))
+
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_mutated_reuse_augassign, dim=1, inputs=[out], device=device)
+    assert_np_equal(out.numpy(), np.array([4], dtype=np.int32))
+
+    out = wp.zeros(1, dtype=wp.int32, device=device)
+    wp.launch(for_iter_mutated_reuse_indirect, dim=1, inputs=[out], device=device)
+    assert_np_equal(out.numpy(), np.array([4], dtype=np.int32))
 
 
 def test_error_return_annotation_mismatch(test, device):
@@ -1938,6 +2102,107 @@ class TestCodeGen(unittest.TestCase):
         ]
         self.assertEqual(len(remaining_static_calls), 1)
 
+    def test_shared_source_across_redeclarations(self):
+        """Redeclarations of one code object share the extracted source and tree;
+        resolution stays per-adjoint, so closure values are not shared."""
+
+        def make(v):
+            @wp.kernel(module="unique")
+            def k(a: wp.array[wp.float32]):
+                tid = wp.tid()
+                a[tid] = v * 2.0
+
+            return k
+
+        k1, k2 = make(1.0), make(2.0)
+        self.assertIsNotNone(k1.adj._shared_source)
+        self.assertIs(k1.adj._shared_source, k2.adj._shared_source)
+        self.assertIs(k1.adj.tree, k2.adj.tree)
+        self.assertNotEqual(k1.module.name, k2.module.name)
+        self.assertIs(make(1.0), k1)
+
+    def test_rebind_observed_through_shared_source(self):
+        """A rebound module global must be observed by the next redeclaration's
+        references and hash, even though syntax is served from the cache."""
+        module = sys.modules[__name__]
+        module.SHARED_SOURCE_REBOUND = wp.constant(10.0)
+        self.addCleanup(delattr, module, "SHARED_SOURCE_REBOUND")
+
+        def make():
+            @wp.kernel(module="unique")
+            def k(a: wp.array[wp.float32]):
+                tid = wp.tid()
+                a[tid] = SHARED_SOURCE_REBOUND
+
+            return k
+
+        k1 = make()
+        self.assertEqual(k1.adj.get_references()[0]["SHARED_SOURCE_REBOUND"], 10.0)
+        module.SHARED_SOURCE_REBOUND = wp.constant(20.0)
+        k2 = make()
+        self.assertIsNot(k2, k1)
+        self.assertEqual(k2.adj.get_references()[0]["SHARED_SOURCE_REBOUND"], 20.0)
+        self.assertNotEqual(k1.module.name, k2.module.name)
+
+    def test_recompiled_equal_code_object_reextracts(self):
+        """A new code object that compares equal to a cached one (old text compiled
+        again while the file moved on, as with a stale .pyc) must miss the cache
+        and re-extract the current file contents."""
+        v1 = "import warp as wp\n\ndef kf(a: wp.array[wp.float32]):\n    tid = wp.tid()\n    a[tid] = 1.0\n"
+        v2 = v1.replace("1.0", "42.25")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "shared_source_demo.py")
+
+            def make_func(text):
+                ns = {}
+                exec(compile(text, path, "exec"), ns)
+                return ns["kf"]
+
+            with open(path, "w") as f:
+                f.write(v1)
+            os.utime(path, (1, 1))
+            f_a = make_func(v1)
+            k_a = wp.kernel(f_a, module="unique")
+            self.assertIn("1.0", k_a.adj.source)
+
+            with open(path, "w") as f:
+                f.write(v2)
+            os.utime(path, (2, 2))
+            f_b = make_func(v1)  # same old text: equal code object, new identity
+
+            self.assertEqual(f_a.__code__, f_b.__code__)
+            self.assertIsNot(f_a.__code__, f_b.__code__)
+
+            k_b = wp.kernel(f_b, module="unique")
+            self.assertIn("42.25", k_b.adj.source)
+            self.assertNotEqual(k_a.module.name, k_b.module.name)
+
+    def test_shared_source_lookup_requires_identity(self):
+        # A record planted under another code object's id (the address-reuse case)
+        # must be rejected by the weakref identity guard.
+        code_1 = compile("def g1():\n    return 1\n", "g.py", "exec").co_consts[0]
+        code_2 = compile("def g2():\n    return 2\n", "g.py", "exec").co_consts[0]
+        entry = codegen._SharedFunctionSource("src", 0, None)
+        codegen._shared_function_sources[id(code_2)] = (weakref.ref(code_1), entry)
+        try:
+            self.assertIsNone(codegen._shared_source_for_code(code_2))
+        finally:
+            del codegen._shared_function_sources[id(code_2)]
+
+    @unittest.skipUnless(sys.implementation.name == "cpython", "relies on CPython reference-cycle collection")
+    def test_shared_source_evicted_on_code_object_death(self):
+        def make_dead_entry():
+            code = compile("def g3():\n    return 3\n", "g.py", "exec").co_consts[0]
+            codegen._store_shared_source(code, codegen._SharedFunctionSource("src", 0, None))
+            cycle = [code]
+            cycle.append(cycle)
+            return id(code)
+
+        dead_id = make_dead_entry()
+        gc.collect()
+        self.assertNotIn(dead_id, codegen._shared_function_sources)
+
 
 devices = get_test_devices()
 
@@ -2078,6 +2343,18 @@ add_function_test(
     TestCodeGen,
     func=test_error_mutating_constant_in_dynamic_loop,
     name="test_error_mutating_constant_in_dynamic_loop",
+    devices=devices,
+)
+add_function_test(
+    TestCodeGen,
+    func=test_for_iter_reused_in_dynamic_loop,
+    name="test_for_iter_reused_in_dynamic_loop",
+    devices=devices,
+)
+add_function_test(
+    TestCodeGen,
+    func=test_for_iter_mutated_reuse_in_dynamic_loop,
+    name="test_for_iter_mutated_reuse_in_dynamic_loop",
     devices=devices,
 )
 add_function_test(

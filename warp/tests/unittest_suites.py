@@ -152,6 +152,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     )
     from warp.tests.test_apic import TestApic
     from warp.tests.test_apic_mesh import TestApicMesh
+    from warp.tests.test_apic_utility_algorithms import TestApicSegmentedSort, TestApicUtilityAlgorithms
     from warp.tests.test_arithmetic import TestArithmetic
     from warp.tests.test_array import TestArray
     from warp.tests.test_array_reduce import TestArrayReduce
@@ -186,6 +187,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.test_fabricarray import TestFabricArray
     from warp.tests.test_factory_style_array_annotations import TestFactoryStyleArrayAnnotations
     from warp.tests.test_fast_math import TestFastMath
+    from warp.tests.test_fixedarray import TestFixedArray
     from warp.tests.test_fp16 import TestFp16
     from warp.tests.test_func import TestFunc
     from warp.tests.test_func_parameter_targets import TestFuncParameterTargets
@@ -260,6 +262,10 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.tile.test_tile_fused_ops import TestTileFusedOps
     from warp.tests.tile.test_tile_large_offsets import TestTileLargeOffsets
     from warp.tests.tile.test_tile_load import TestTileLoad
+    from warp.tests.tile.test_tile_load_assign import TestTileLoadAssign
+    from warp.tests.tile.test_tile_load_extract import TestTileLoadExtract
+    from warp.tests.tile.test_tile_load_indexed import TestTileLoadIndexed
+    from warp.tests.tile.test_tile_load_vectorized import TestTileLoadVectorized
     from warp.tests.tile.test_tile_mathdx import TestTileMathDx
     from warp.tests.tile.test_tile_matmul import TestTileMatmul
     from warp.tests.tile.test_tile_matmul_no_mathdx import TestTileMatmulNoMathDx
@@ -279,6 +285,8 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestAllocatorProtocol,
         TestApic,
         TestApicMesh,
+        TestApicSegmentedSort,
+        TestApicUtilityAlgorithms,
         TestArithmetic,
         TestArray,
         TestArrayFillCapture,
@@ -336,6 +344,7 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestFemMultiEnv,
         TestFemQuadrature,
         TestFemShape,
+        TestFixedArray,
         TestFp16,
         TestFunc,
         TestFuncParameterTargets,
@@ -419,6 +428,10 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestTileFusedOps,
         TestTileLargeOffsets,
         TestTileLoad,
+        TestTileLoadAssign,
+        TestTileLoadExtract,
+        TestTileLoadIndexed,
+        TestTileLoadVectorized,
         TestTileMathDx,
         TestTileMatmul,
         TestTileMatmulNoMathDx,

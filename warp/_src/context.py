@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     from typing import ParamSpec
 
     from warp._src.apic.capture import APICapture
+    from warp._src.deterministic import DeterministicMeta
 else:
     try:
         from typing import ParamSpec
@@ -142,6 +143,17 @@ def get_function_args(func):
 
 complex_type_hints = (Any, Callable, tuple)
 sequence_types = (list, tuple)
+
+
+class timing_result_t(ctypes.Structure):
+    """CUDA timing struct for fetching values from C++."""
+
+    _fields_ = (
+        ("context", ctypes.c_void_p),
+        ("name", ctypes.c_char_p),
+        ("flag", ctypes.c_int),
+        ("elapsed", ctypes.c_float),
+    )
 
 
 class det_scatter_buf_t(ctypes.Structure):
@@ -415,8 +427,32 @@ class Function:
                 template_types = list(overload.input_types.values())
                 arg_names = list(overload.input_types.keys())
 
-                # attempt to unify argument types with function template types
-                warp._src.types.infer_argument_types(arguments, template_types, arg_names)
+                if len(arguments) != len(template_types):
+                    raise RuntimeError(
+                        f"Invalid number of arguments for function '{self.key}', "
+                        f"expected {len(template_types)}, got {len(arguments)}"
+                    )
+
+                inference_arguments = []
+                inference_template_types = []
+                inference_arg_names = []
+                for argument, template_type, arg_name in zip(arguments, template_types, arg_names, strict=True):
+                    # Function objects do not have an ordinary Warp value type. Overload
+                    # selection already validated Function-annotated slots, so exclude them
+                    # from value argument inference at Python scope.
+                    if warp._src.types.is_warp_function_annotation(template_type) and isinstance(argument, Function):
+                        continue
+
+                    inference_arguments.append(argument)
+                    inference_template_types.append(template_type)
+                    inference_arg_names.append(arg_name)
+
+                # Attempt to unify ordinary argument types with function template types.
+                warp._src.types.infer_argument_types(
+                    inference_arguments,
+                    inference_template_types,
+                    inference_arg_names,
+                )
                 return overload.func(*arguments)
 
             # We got here without ever calling an overload.func
@@ -852,7 +888,15 @@ def call_builtin_from_desc(
 
 
 class KernelHooks:
-    def __init__(self, forward, backward, forward_smem_bytes=0, backward_smem_bytes=0, cluster_dim=1):
+    def __init__(
+        self,
+        forward,
+        backward,
+        forward_smem_bytes=0,
+        backward_smem_bytes=0,
+        cluster_dim=1,
+        det_launch_meta: DeterministicMeta | None = None,
+    ):
         self.forward = forward
         self.backward = backward
 
@@ -864,6 +908,10 @@ class KernelHooks:
         # the attribute, otherwise 1. Resolved once here so the launch hot path
         # reads a single attribute instead of recomputing it per call.
         self.cluster_dim = cluster_dim
+
+        # Launch metadata for this module variant; kernel.adj.det_meta is
+        # codegen scratch and may describe a different variant.
+        self.det_launch_meta = det_launch_meta
 
 
 # Hardware upper bound for the non-portable cluster range (9-16), valid on
@@ -1674,6 +1722,7 @@ def kernel(
         elif module == "unique":
             # Create a new temporary module that will be renamed based on hash.
             m = Module(f.__name__, None)
+            m.defer_reference_scan = True
         elif isinstance(module, str):
             # Look up module by name
             m = get_module(module)
@@ -1790,7 +1839,10 @@ def kernel(
                 for existing_kernel in existing_module._get_live_kernels():
                     existing_kernel.adj.skip_build = False
             else:
-                # This is the first time we've seen this kernel
+                # This is the first time we've seen this kernel; the module is kept,
+                # so run the dependency scan that registration deferred.
+                m.defer_reference_scan = False
+                m._find_references(k.adj)
                 # Register the new unique module in the global registry
                 user_modules[k.module.name] = k.module
                 log_debug(f"[wp.kernel] Created new unique module: {k.module.name}")
@@ -3048,13 +3100,23 @@ class ModuleExec:
         instance.handle = None
         return instance
 
-    def __init__(self, handle, module_hash, device, meta, block_dim: int, compile_arch: int | None = None):
+    def __init__(
+        self,
+        handle,
+        module_hash,
+        device,
+        meta,
+        block_dim: int,
+        compile_arch: int | None = None,
+        det_launch_meta_map: dict[str, DeterministicMeta] | None = None,
+    ):
         self.handle = handle
         self.module_hash = module_hash
         self.device = device
         self.kernel_hooks = {}
         self.meta = meta
         self.block_dim = block_dim
+        self.det_launch_meta_map = det_launch_meta_map if det_launch_meta_map is not None else {}
         # Compute capability the loaded binary was actually compiled for (None for
         # CPU). Cluster classification must use this frozen target, not the current
         # global config, which can change after the module is loaded.
@@ -3161,6 +3223,7 @@ class ModuleExec:
                 forward_smem_bytes,
                 backward_smem_bytes,
                 cluster_dim=effective_cluster_dim,
+                det_launch_meta=self.det_launch_meta_map.get(name),
             )
 
         else:
@@ -3178,7 +3241,7 @@ class ModuleExec:
             else:
                 backward = None
 
-            hooks = KernelHooks(forward, backward)
+            hooks = KernelHooks(forward, backward, det_launch_meta=self.det_launch_meta_map.get(name))
 
         self.kernel_hooks[name] = hooks
         return hooks
@@ -3248,6 +3311,10 @@ class Module:
 
         # Indicates whether the module has functions or kernels with unresolved static expressions.
         self.has_unresolved_static_expressions = False
+
+        # Set while a module="unique" module awaits its dedup decision: the dependency scan
+        # runs only if the module is kept, so a duplicate never creates edges to detach.
+        self.defer_reference_scan = False
 
         self.options = {
             "max_unroll": warp.config.max_unroll,
@@ -3379,7 +3446,8 @@ class Module:
         if kernel.adj.has_unresolved_static_expressions:
             self.has_unresolved_static_expressions = True
 
-        self._find_references(kernel.adj)
+        if not self.defer_reference_scan:
+            self._find_references(kernel.adj)
 
         # for a reload of module on next launch
         self.mark_modified()
@@ -3576,19 +3644,29 @@ class Module:
 
         return self.hashers[block_dim].get_hash()
 
-    def _refresh_deterministic_metadata_for_cache_hit(self, block_dim: int, options: dict) -> None:
-        """Repopulate ``det_meta`` after a CPU or CUDA cache hit without firing tile LTO compilation."""
+    def _snapshot_deterministic_metadata(
+        self, block_dim: int, options: dict, rebuild: bool
+    ) -> dict[str, DeterministicMeta]:
+        """Capture per-kernel launch metadata for the module variant being loaded, keyed by mangled name.
+
+        ``rebuild`` is False after a fresh compile, which already built the
+        adjoints with these options; ``output_arch=None`` avoids firing tile LTO.
+        """
         if options.get("deterministic") == warp.config.DeterministicMode.NOT_GUARANTEED:
-            return
+            return {}
 
         hasher = self.hashers.get(block_dim)
         if hasher is None:
-            return
+            return {}
 
         builder_options = options | {"output_arch": None}
+        snapshot = {}
         with _codegen_lock:
             for kernel in hasher.get_unique_kernels():
-                kernel.adj.build(None, builder_options)
+                if rebuild:
+                    kernel.adj.build(None, builder_options)
+                snapshot[kernel.get_mangled_name()] = kernel.adj.det_meta
+        return snapshot
 
     def _use_ptx(self, device) -> bool:
         return device.get_cuda_output_format(self.options.get("cuda_output")) == "ptx"
@@ -4054,8 +4132,7 @@ class Module:
 
                 module_load_timer.extra_msg = " (compiled)" if compiled else " (cached)"
 
-            if not compiled:
-                self._refresh_deterministic_metadata_for_cache_hit(active_block_dim, options)
+            det_launch_meta_map = self._snapshot_deterministic_metadata(active_block_dim, options, rebuild=not compiled)
 
             # -----------------------------------------------------------
             # Load CPU or CUDA binary
@@ -4079,13 +4156,17 @@ class Module:
                     != 0
                 ):
                     raise Exception(f"Failed to load CPU module '{self.name}' ({module_load_diagnostics})")
-                module_exec = ModuleExec(module_handle, module_hash, device, meta, active_block_dim, output_arch)
+                module_exec = ModuleExec(
+                    module_handle, module_hash, device, meta, active_block_dim, output_arch, det_launch_meta_map
+                )
                 self.execs[(None, active_block_dim)] = module_exec
 
             elif device.is_cuda:
                 cuda_module = warp._src.build.load_cuda(binary_path, device)
                 if cuda_module is not None:
-                    module_exec = ModuleExec(cuda_module, module_hash, device, meta, active_block_dim, output_arch)
+                    module_exec = ModuleExec(
+                        cuda_module, module_hash, device, meta, active_block_dim, output_arch, det_launch_meta_map
+                    )
                     self.execs[(device.context, active_block_dim)] = module_exec
                 else:
                     module_load_timer.extra_msg = " (error)"
@@ -7287,7 +7368,7 @@ class Runtime:
             self.core.wp_cuda_timing_begin.restype = None
             self.core.wp_cuda_timing_get_result_count.argtypes = []
             self.core.wp_cuda_timing_get_result_count.restype = int
-            self.core.wp_cuda_timing_end.argtypes = []
+            self.core.wp_cuda_timing_end.argtypes = [ctypes.POINTER(timing_result_t), ctypes.c_int]
             self.core.wp_cuda_timing_end.restype = None
 
             self.core.wp_graph_coloring.argtypes = [
@@ -10523,7 +10604,7 @@ def launch(
         # Deterministic mode: redirect to the launcher that supplies the hidden
         # deterministic buffers. Backward kernels use the same path so generated
         # tape adjoints can reduce gradient atomics in a fixed order.
-        det_meta = getattr(kernel.adj, "det_meta", None)
+        det_meta = hooks.det_launch_meta
         counter_replay_targets = getattr(det_meta, "counter_replay_targets", ())
         if adjoint and det_meta is not None and det_meta.needs_deterministic and counter_replay_targets:
             target_names = ", ".join(target.target_label for target in counter_replay_targets)
