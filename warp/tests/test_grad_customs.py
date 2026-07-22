@@ -724,9 +724,9 @@ def test_custom_grad_tile_matmul(test, device):
     tape.backward(grads={c: wp.ones_like(c)})
 
     ones = np.ones((M, M), dtype=np.float32)
-    assert_np_equal(c.numpy(), a_np @ b_np, tol=1e-4)
-    assert_np_equal(a.grad.numpy(), ones @ b_np.T, tol=1e-4)
-    assert_np_equal(b.grad.numpy(), a_np.T @ ones, tol=1e-4)
+    assert_np_equal(c.numpy(), a_np @ b_np, tol=1e-6)
+    assert_np_equal(a.grad.numpy(), ones @ b_np.T, tol=1e-6)
+    assert_np_equal(b.grad.numpy(), a_np.T @ ones, tol=1e-6)
 
 
 devices = get_test_devices()
