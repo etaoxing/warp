@@ -392,41 +392,37 @@
   <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../user_guide/compatibility.html">Compatibility &amp; Support</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/basics.html">Basics</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/runtime.html">Runtime</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/devices.html">Devices</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/differentiability.html">Differentiability</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/generics.html">Generics</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/tiles.html">Tiles</a></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/programming_model.html">Programming Model</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/programming_model/generics.html">Generics</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/programming_model/tiles.html">Tiles</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/programming_model/code_generation.html">Code Generation</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/programming_model/cpp_cuda_workflows.html">C++ and CUDA Workflows</a></li>
+</ul>
+</details></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/interoperability.html">Interoperability</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
-<li class="toctree-l2"><a class="reference internal" href="../../user_guide/interoperability_pytorch.html">PyTorch Interoperability</a></li>
-<li class="toctree-l2"><a class="reference internal" href="../../user_guide/interoperability_jax.html">JAX Interoperability</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/interoperability/pytorch.html">PyTorch Interoperability</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/interoperability/jax.html">JAX Interoperability</a></li>
+</ul>
+</details></li>
+<li class="toctree-l1 has-children"><a class="reference internal" href="../../user_guide/execution_and_performance.html">Execution and Performance</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/execution_and_performance/concurrency.html">Concurrency</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/execution_and_performance/memory_management.html">Memory Allocation and Access</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/execution_and_performance/profiling.html">Profiling</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../../user_guide/execution_and_performance/deterministic_execution.html">Deterministic Execution</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/configuration.html">Configuration</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/cpp_cuda_workflows.html">C++ and CUDA Workflows</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/debugging.html">Debugging</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/deterministic_execution.html">Deterministic Execution</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/limitations.html">Limitations</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/contribution_guide.html">Contribution Guide</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/publications.html">Publications using Warp</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/compatibility.html">Compatibility &amp; Support</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../user_guide/faq.html">FAQ</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../user_guide/changelog.html">Changelog</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Deep Dive</span></p>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Language Reference</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../../deep_dive/codegen.html">Code Generation</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../deep_dive/allocators.html">Allocators</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../deep_dive/memory_access.html">CPU/GPU cross-device memory access</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../deep_dive/concurrency.html">Concurrency</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../deep_dive/profiling.html">Profiling</a></li>
-</ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Domain Modules</span></p>
-<ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../../domain_modules/sparse.html">Sparse Matrices</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../domain_modules/fem.html">FEM Toolkit</a></li>
-<li class="toctree-l1"><a class="reference internal" href="../../domain_modules/render.html">Rendering</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../language_reference/builtins.html">Built-Ins</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
 <ul class="nav bd-sidenav">
@@ -440,9 +436,17 @@
 <li class="toctree-l1"><a class="reference internal" href="../warp_types.html">warp.types</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../warp_utils.html">warp.utils</a></li>
 </ul>
-<p aria-level="2" class="caption" role="heading"><span class="caption-text">Language Reference</span></p>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Domain Modules</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../../language_reference/builtins.html">Built-Ins</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../domain_modules/sparse.html">Sparse Matrices</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../domain_modules/fem.html">FEM Toolkit</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../domain_modules/render.html">Rendering</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../../project/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../project/publications.html">Publications using Warp</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../project/changelog.html">Changelog</a></li>
 </ul>
 </div>
 </nav></div>
@@ -530,7 +534,7 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">has_side_effect</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>,</dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="reference external" href="https://github.com/NVIDIA/warp/blob/main/warp/_src/jax/ffi.py#L1542-L1639"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#warp.jax_callable" title="Link to this definition">#</a></dt>
+<span class="sig-paren">)</span><a class="reference external" href="https://github.com/NVIDIA/warp/blob/main/warp/_src/jax/ffi.py#L1663-L1770"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#warp.jax_callable" title="Link to this definition">#</a></dt>
 <dd><p>Create a JAX callback from an annotated Python function.</p>
 <p>The Python function arguments must have type annotations like Warp kernels.</p>
 <p>NOTE: This is an experimental feature under development.</p>
@@ -545,7 +549,10 @@ This must include the number of <code class="docutils literal notranslate"><span
 <code class="docutils literal notranslate"><span class="pre">JaxCallableGraphMode.WARP</span></code>: Let Warp capture the graph. Use this mode when the callable cannot be used as a subgraph,
 such as when the callable uses conditional graph nodes.
 <code class="docutils literal notranslate"><span class="pre">JaxCallableGraphMode.NONE</span></code>: Disable graph capture. Use when the callable performs operations that are not legal in a graph,
-such as host synchronization.</p></li>
+such as host synchronization.
+On CPU, <code class="docutils literal notranslate"><span class="pre">JaxCallableGraphMode.NONE</span></code> and <code class="docutils literal notranslate"><span class="pre">JaxCallableGraphMode.JAX</span></code>
+both execute without graph capture. The <code class="docutils literal notranslate"><span class="pre">WARP</span></code>, <code class="docutils literal notranslate"><span class="pre">WARP_STAGED</span></code>, and
+<code class="docutils literal notranslate"><span class="pre">WARP_STAGED_EX</span></code> modes require CUDA.</p></li>
 <li><p><strong>vmap_method</strong> (<a class="reference external" href="https://docs.python.org/3/library/stdtypes.html#str" title="(in Python v3.14)"><em>str</em></a><em> | </em><em>None</em>) – String specifying how the callback transforms under <code class="docutils literal notranslate"><span class="pre">vmap()</span></code>.
 This argument can also be specified for individual calls.</p></li>
 <li><p><strong>output_dims</strong> – Specify the default dimensions of output arrays.
@@ -560,7 +567,12 @@ If <code class="docutils literal notranslate"><span class="pre">None</span></cod
 If <code class="docutils literal notranslate"><span class="pre">None</span></code>, copy all output arguments.</p></li>
 <li><p><strong>graph_cache_max</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Maximum number of cached graphs captured using <code class="docutils literal notranslate"><span class="pre">JaxCallableGraphMode.WARP</span></code>.
 If <code class="docutils literal notranslate"><span class="pre">None</span></code>, the graph cache is unlimited.</p></li>
-<li><p><strong>module_preload_mode</strong> (<a class="reference internal" href="warp.JaxModulePreloadMode.html#warp.JaxModulePreloadMode" title="warp._src.jax.ffi.JaxModulePreloadMode"><em>JaxModulePreloadMode</em></a>) – Specify the devices where the module should be preloaded.</p></li>
+<li><p><strong>module_preload_mode</strong> (<a class="reference internal" href="warp.JaxModulePreloadMode.html#warp.JaxModulePreloadMode" title="warp._src.jax.ffi.JaxModulePreloadMode"><em>JaxModulePreloadMode</em></a>) – Specify the devices where the module should be preloaded.
+<code class="docutils literal notranslate"><span class="pre">JaxModulePreloadMode.ALL_DEVICES</span></code> includes the host CPU and all
+supported local CUDA devices. Preloading is best-effort: JAX devices
+that cannot be mapped to Warp are skipped, and execution loads the
+module for the callback’s actual device. Module loading errors are
+not suppressed.</p></li>
 <li><p><strong>has_side_effect</strong> (<a class="reference internal" href="warp.bool.html#warp.bool" title="warp.bool"><em>bool</em></a>) – Whether the custom call has side effects. When True,
 the FFI call will be executed even when the outputs are not used.</p></li>
 </ul>
@@ -572,7 +584,8 @@ the FFI call will be executed even when the outputs are not used.</p></li>
 <li><p>Scalars must be static arguments in JAX.</p></li>
 <li><p>Input and input-output arguments must precede the output arguments in the <code class="docutils literal notranslate"><span class="pre">func</span></code> definition.</p></li>
 <li><p>There must be at least one output or input-output argument.</p></li>
-<li><p>Only the CUDA backend is supported.</p></li>
+<li><p>The CPU and CUDA backends are supported. JAX selects the backend from the
+lowered computation’s device.</p></li>
 </ul>
 </dd>
 </dl>
