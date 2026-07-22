@@ -14702,13 +14702,14 @@ def tile_matmul_lto_dispatch_func(
         #   - a narrow precision (fp8, fp16, bf16, int8 -- not fp32/fp64)
         #   - a size where any of M/N/K is not a multiple of 16
         #   - a static LeadingDimension operator, under high register pressure
-        # cuBLASDx 0.4+ hard-fails these configurations with a static_assert.
+        # cuBLASDx 0.4+ hard-fails these configurations with a static_assert; see
+        # https://docs.nvidia.com/cuda/cublasdx/0.4.0/release_notes.html#known-issues
         #
         # The compiler that matters is the one libmathdx embeds, which Python cannot
         # detect, so for exactly these configurations a compile failure falls back to
         # the scalar GEMM (on fixed toolchains the compile succeeds and keeps the
         # cuBLASDx path). Any other failure is a genuine error and raises.
-        nvbug_5218000_risk = (
+        allow_lto_compile_failure_fallback = (
             not gemm_is_dense
             and any(t.dtype in (float16, bfloat16, vec2h) for t in (a.type, b.type, out.type))
             and any(dim % 16 != 0 for dim in (M, N, K))
@@ -14777,7 +14778,7 @@ def tile_matmul_lto_dispatch_func(
                 (fun_backward_A, lto_backward_A) = (fun_forward, None)
                 (fun_backward_B, lto_backward_B) = (fun_forward, None)
         except RuntimeError as err:
-            if not nvbug_5218000_risk:
+            if not allow_lto_compile_failure_fallback:
                 raise
             # unregister LTOs added by the calls above that did succeed
             for symbol in set(builder.ltoirs) - prior_lto_symbols:
