@@ -45,7 +45,7 @@ Rather than requiring a formal Contributor License Agreement (CLA), we use the
 `Developer Certificate of Origin <https://developercertificate.org/>`__ to
 ensure contributors have the right to submit their contributions to this project.
 Please ensure that all commits have a
-`sign-off <https://git-scm.com/docs/git-commit#Documentation/git-commit.txt--s>`__ 
+`sign-off <https://git-scm.com/docs/git-commit#Documentation/git-commit.txt--s>`__
 added with an email address that matches the commit author
 to agree to the DCO terms for each particular contribution.
 
@@ -393,11 +393,22 @@ directory. As part of the test suite, most examples in the ``warp/examples`` sub
 `test_examples.py <https://github.com/NVIDIA/warp/blob/main/warp/tests/test_examples.py>`__.
 
 After building the Warp library (``uv run build_lib.py`` from the project root), run the test suite using
-``uv run --extra dev -m warp.tests``. The tests should take approximately 10–20 minutes to run. By default, only the test modules
+``uv run --extra dev -m warp.tests``. The suite can take 10–20 minutes with the default limit of eight
+test processes; on machines with more cores, raise the limit (e.g. ``--maxjobs 24``) to cut this to a
+few minutes. Each test process creates its own CUDA context and device allocations, so higher process
+counts also need correspondingly more GPU memory. By default, only the test modules
 defined in ``default_suite()`` (in ``warp/tests/unittest_suites.py``) are run. To run the test suite
 using `test discovery <https://docs.python.org/3/library/unittest.html#test-discovery>`__, use
 ``uv run --extra dev -m warp.tests -s autodetect``, which will discover tests in modules matching the path
 ``warp/tests/test*.py``.
+
+.. note::
+
+   The native libraries in ``warp/bin`` are not rebuilt automatically. After merging or rebasing
+   on ``main``, or otherwise pulling changes to ``warp/native/``, rebuild with
+   ``uv run build_lib.py`` (or ``build_lib.py --quick`` when the installed CUDA driver is at
+   least as new as the CUDA Toolkit). Running against stale binaries can crash or corrupt
+   JIT-compiled kernels in confusing ways, such as when a merge changed a native struct layout.
 
 Running a subset of tests
 """""""""""""""""""""""""
