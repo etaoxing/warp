@@ -393,11 +393,12 @@ directory. As part of the test suite, most examples in the ``warp/examples`` sub
 `test_examples.py <https://github.com/NVIDIA/warp/blob/main/warp/tests/test_examples.py>`__.
 
 After building the Warp library (``uv run build_lib.py`` from the project root), run the test suite using
-``uv run --extra dev -m warp.tests``. The suite can take 10–20 minutes with the default limit of eight
-test processes; on machines with more cores, raise the limit (e.g. ``--maxjobs 24``) to cut this to a
-few minutes. Each test process creates its own CUDA context and device allocations, so higher process
-counts also need correspondingly more GPU memory. By default, only the test modules
-defined in ``default_suite()`` (in ``warp/tests/unittest_suites.py``) are run. To run the test suite
+``uv run --extra dev -m warp.tests``. The suite typically takes 10–20 minutes. By default, the runner
+uses up to eight test processes, capped further by the detected CPU count and the number of selected
+test classes. On systems with sufficient CPU and GPU resources, the limit can be raised with
+``--maxjobs N``. Performance gains depend on the workload and hardware and generally diminish at higher
+process counts. Additional workers running CUDA tests can also increase peak GPU memory usage. By
+default, only the test modules defined in ``default_suite()`` (in ``warp/tests/unittest_suites.py``) are run. To run the test suite
 using `test discovery <https://docs.python.org/3/library/unittest.html#test-discovery>`__, use
 ``uv run --extra dev -m warp.tests -s autodetect``, which will discover tests in modules matching the path
 ``warp/tests/test*.py``.
@@ -406,7 +407,7 @@ using `test discovery <https://docs.python.org/3/library/unittest.html#test-disc
 
    The native libraries in ``warp/bin`` are not rebuilt automatically. After merging or rebasing
    on ``main``, or otherwise pulling changes to ``warp/native/``, rebuild with
-   ``uv run build_lib.py`` (or ``build_lib.py --quick`` when the installed CUDA driver is at
+   ``uv run build_lib.py`` (or ``uv run build_lib.py --quick`` when the installed CUDA driver is at
    least as new as the CUDA Toolkit). Running against stale binaries can crash or corrupt
    JIT-compiled kernels in confusing ways, such as when a merge changed a native struct layout.
 
