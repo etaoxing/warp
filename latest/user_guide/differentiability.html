@@ -9,7 +9,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Differentiability &#8212; Warp 1.16.0.dev0</title>
+    <title>Differentiability &#8212; Warp 1.17.0.dev2</title>
   
   
   
@@ -44,7 +44,7 @@
 
 
 
-    <script src="../_static/documentation_options.js?v=4ae37cce"></script>
+    <script src="../_static/documentation_options.js?v=a5afd832"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -70,7 +70,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="1.16.0.dev0" />
+  <meta name="docsearch:version" content="1.17.0.dev2" />
   
     
     <script src="../_static/searchtools.js"></script>
@@ -147,11 +147,11 @@
       
     
     
-    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a></div>
     
@@ -291,11 +291,11 @@
       
     
     
-    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a>
 
@@ -445,7 +445,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../project/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../project/contribution_guide.html">Contributing to Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../project/publications.html">Publications using Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../project/changelog.html">Changelog</a></li>
 </ul>
@@ -872,8 +872,8 @@ This allows users to define code that should replace the automatically generated
 <span class="math notranslate nohighlight">\(\color{green}{g(x)}\)</span>, which we refer to as “replay” function (that matches the original function definition by default),
 and its derivative <span class="math notranslate nohighlight">\(\color{blue}{g^\prime(x)}\)</span>, referred to as “grad”.</p>
 <p>Both the replay and the grad implementations can be customized by the user. They are defined as follows:</p>
-<div class="pst-scrollable-table-container"><table class="table" id="id7">
-<caption><span class="caption-text">Customizing the replay and grad versions of function <code class="docutils literal notranslate"><span class="pre">myfunc</span></code></span><a class="headerlink" href="#id7" title="Link to this table">#</a></caption>
+<div class="pst-scrollable-table-container"><table class="table" id="id8">
+<caption><span class="caption-text">Customizing the replay and grad versions of function <code class="docutils literal notranslate"><span class="pre">myfunc</span></code></span><a class="headerlink" href="#id8" title="Link to this table">#</a></caption>
 <colgroup>
 <col style="width: 100.0%" />
 </colgroup>
@@ -1626,7 +1626,7 @@ then be safely updated with in-place addition or subtraction (<code class="docut
 will invalidate gradient computations related to the vector, matrix, or quaternion.</p>
 </section>
 <section id="dynamic-loops">
-<h3>Dynamic Loops<a class="headerlink" href="#dynamic-loops" title="Link to this heading">#</a></h3>
+<span id="id7"></span><h3>Dynamic Loops<a class="headerlink" href="#dynamic-loops" title="Link to this heading">#</a></h3>
 <p>Currently, dynamic loops are not replayed or unrolled in the backward pass, meaning intermediate values that are
 meant to be computed in the loop and may be necessary for adjoint calculations are not updated.</p>
 <p>In the following example, the correct gradient is computed because the <code class="docutils literal notranslate"><span class="pre">x</span></code> array adjoints do not depend on intermediate values of <code class="docutils literal notranslate"><span class="pre">sum</span></code>:</p>

@@ -9,7 +9,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>warp.load_aot_module &#8212; Warp 1.16.0.dev0</title>
+    <title>warp.load_aot_module &#8212; Warp 1.17.0.dev2</title>
   
   
   
@@ -44,7 +44,7 @@
 
 
 
-    <script src="../../_static/documentation_options.js?v=4ae37cce"></script>
+    <script src="../../_static/documentation_options.js?v=a5afd832"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -69,7 +69,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="1.16.0.dev0" />
+  <meta name="docsearch:version" content="1.17.0.dev2" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -146,11 +146,11 @@
       
     
     
-    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a></div>
     
@@ -290,11 +290,11 @@
       
     
     
-    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a>
 
@@ -444,7 +444,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../../project/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../project/contribution_guide.html">Contributing to Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../project/publications.html">Publications using Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../project/changelog.html">Changelog</a></li>
 </ul>
@@ -526,10 +526,10 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">arch</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">module_dir</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">use_ptx</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>,</dd>
-<dd><em class="sig-param"><span class="n"><span class="pre">strip_hash</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">strip_hash</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>,</dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="reference external" href="https://github.com/NVIDIA/warp/blob/main/warp/_src/context.py#L11551-L11653"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#warp.load_aot_module" title="Link to this definition">#</a></dt>
+<span class="sig-paren">)</span><a class="reference external" href="https://github.com/NVIDIA/warp/blob/main/warp/_src/context.py#L11712-L11814"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#warp.load_aot_module" title="Link to this definition">#</a></dt>
 <dd><p>Load a previously compiled module (ahead of time).</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
@@ -547,7 +547,7 @@ when loading modules for the GPU. If <code class="docutils literal notranslate">
 try both PTX and CUBIN (PTX first) and load the first that exists.
 If neither exists, a <code class="docutils literal notranslate"><span class="pre">FileNotFoundError</span></code> is raised listing all
 attempted paths.</p></li>
-<li><p><strong>strip_hash</strong> (<a class="reference internal" href="warp.bool.html#warp.bool" title="warp.bool"><em>bool</em></a>) – <p>Whether to strip the hash from the module and kernel names.
+<li><p><strong>strip_hash</strong> (<a class="reference internal" href="warp.bool.html#warp.bool" title="warp.bool"><em>bool</em></a><em> | </em><em>None</em>) – <p>Whether to strip the hash from the module and kernel names.
 Setting this value to <code class="docutils literal notranslate"><span class="pre">True</span></code> or <code class="docutils literal notranslate"><span class="pre">False</span></code> will update the module’s
 <code class="docutils literal notranslate"><span class="pre">&quot;strip_hash&quot;</span></code> option. If left at <code class="docutils literal notranslate"><span class="pre">None</span></code>, the current value will
 be used.</p>

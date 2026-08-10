@@ -9,7 +9,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>warp.optim.linear.CR &#8212; Warp 1.16.0.dev0</title>
+    <title>warp.optim.linear.CR &#8212; Warp 1.17.0.dev2</title>
   
   
   
@@ -44,7 +44,7 @@
 
 
 
-    <script src="../../_static/documentation_options.js?v=4ae37cce"></script>
+    <script src="../../_static/documentation_options.js?v=a5afd832"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -69,7 +69,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="1.16.0.dev0" />
+  <meta name="docsearch:version" content="1.17.0.dev2" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -146,11 +146,11 @@
       
     
     
-    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a></div>
     
@@ -290,11 +290,11 @@
       
     
     
-    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a>
 
@@ -444,7 +444,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../../project/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../project/contribution_guide.html">Contributing to Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../project/publications.html">Publications using Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../project/changelog.html">Changelog</a></li>
 </ul>
@@ -534,17 +534,19 @@
 <dd><em class="sig-param"><span class="n"><span class="pre">callback</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">check_every</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">10</span></span></em>,</dd>
 <dd><em class="sig-param"><span class="n"><span class="pre">use_cuda_graph</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>,</dd>
+<dd><em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>,</dd>
+<dd><em class="sig-param"><span class="n"><span class="pre">restart</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>,</dd>
 </dl>
 
-<span class="sig-paren">)</span><a class="reference external" href="https://github.com/NVIDIA/warp/blob/main/warp/_src/optim/linear.py#L813-L939"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#warp.optim.linear.CR" title="Link to this definition">#</a></dt>
+<span class="sig-paren">)</span><a class="reference external" href="https://github.com/NVIDIA/warp/blob/main/warp/_src/optim/linear.py#L1124-L1286"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#warp.optim.linear.CR" title="Link to this definition">#</a></dt>
 <dd><p>Pre-allocated state for the Conjugate Residual solver.</p>
-<p>See <a class="reference internal" href="warp.optim.linear.LinearSolverState.html#warp.optim.linear.LinearSolverState" title="warp.optim.linear.LinearSolverState"><code class="xref py py-class docutils literal notranslate"><span class="pre">LinearSolverState</span></code></a> for the constructor parameters. The preconditioner
-<code class="docutils literal notranslate"><span class="pre">M</span></code> may be freely changed (or toggled between <code class="docutils literal notranslate"><span class="pre">None</span></code> and a valid operator)
-between calls as long as the replacement operands match the construction-time
-shape, dtype, device, and batch layout.</p>
+<p>See <a class="reference internal" href="warp.optim.linear.LinearSolverState.html#warp.optim.linear.LinearSolverState" title="warp.optim.linear.LinearSolverState"><code class="xref py py-class docutils literal notranslate"><span class="pre">LinearSolverState</span></code></a> for the shared constructor parameters, plus:</p>
 <dl class="field-list simple">
 <dt class="field-odd">Parameters<span class="colon">:</span></dt>
 <dd class="field-odd"><ul class="simple">
+<li><p><strong>restart</strong> (<a class="reference external" href="https://docs.python.org/3/library/functions.html#int" title="(in Python v3.14)"><em>int</em></a><em> | </em><em>None</em>) – Optional positive number of iterations between restarts. Each restart
+recomputes <code class="docutils literal notranslate"><span class="pre">b</span> <span class="pre">-</span> <span class="pre">A</span> <span class="pre">x</span></code> and resets the search direction to limit
+finite-precision drift.</p></li>
 <li><p><strong>A</strong> (<a class="reference internal" href="warp.array.html#warp.array" title="warp._src.types.array"><em>array</em></a><em> | </em><a class="reference internal" href="warp.sparse.BsrMatrix.html#warp.sparse.BsrMatrix" title="warp._src.sparse.BsrMatrix"><em>BsrMatrix</em></a><em> | </em><a class="reference internal" href="warp.optim.linear.LinearOperator.html#warp.optim.linear.LinearOperator" title="warp._src.optim.linear.LinearOperator"><em>LinearOperator</em></a>)</p></li>
 <li><p><strong>b</strong> (<a class="reference internal" href="warp.array.html#warp.array" title="warp._src.types.array"><em>array</em></a>)</p></li>
 <li><p><strong>x</strong> (<a class="reference internal" href="warp.array.html#warp.array" title="warp._src.types.array"><em>array</em></a>)</p></li>
@@ -558,6 +560,9 @@ shape, dtype, device, and batch layout.</p>
 </ul>
 </dd>
 </dl>
+<p>The preconditioner <code class="docutils literal notranslate"><span class="pre">M</span></code> may be freely changed (or toggled between <code class="docutils literal notranslate"><span class="pre">None</span></code> and
+a valid operator) between calls as long as the replacement operands match the
+construction-time shape, dtype, device, and batch layout.</p>
 </dd></dl>
 
 </section>

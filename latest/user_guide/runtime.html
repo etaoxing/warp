@@ -9,7 +9,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Runtime &#8212; Warp 1.16.0.dev0</title>
+    <title>Runtime &#8212; Warp 1.17.0.dev2</title>
   
   
   
@@ -44,7 +44,7 @@
 
 
 
-    <script src="../_static/documentation_options.js?v=4ae37cce"></script>
+    <script src="../_static/documentation_options.js?v=a5afd832"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -69,7 +69,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="1.16.0.dev0" />
+  <meta name="docsearch:version" content="1.17.0.dev2" />
   
     
     <script src="../_static/searchtools.js"></script>
@@ -146,11 +146,11 @@
       
     
     
-    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a></div>
     
@@ -290,11 +290,11 @@
       
     
     
-    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a>
 
@@ -444,7 +444,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../project/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../project/contribution_guide.html">Contributing to Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../project/publications.html">Publications using Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../project/changelog.html">Changelog</a></li>
 </ul>
@@ -686,12 +686,21 @@ To index a multi-dimensional array, use the following kernel syntax:</p>
 </pre></div>
 </div>
 <p>To create an array slice, use the following syntax, where the number of indices is less than the array dimensions:</p>
-<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># returns an 1d array slice representing a row of the 2d array</span>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="c1"># returns a 1D array slice representing a row of the 2D array</span>
 <span class="n">row</span> <span class="o">=</span> <span class="nb">input</span><span class="p">[</span><span class="n">i</span><span class="p">]</span>
+
+<span class="c1"># start, stop, step, and column may be runtime expressions</span>
+<span class="n">view</span> <span class="o">=</span> <span class="nb">input</span><span class="p">[</span><span class="n">start</span><span class="p">:</span><span class="n">stop</span><span class="p">:</span><span class="n">step</span><span class="p">,</span> <span class="n">column</span><span class="p">]</span>
 </pre></div>
 </div>
 <p>Slice operators can be concatenated, e.g.: <code class="docutils literal notranslate"><span class="pre">s</span> <span class="pre">=</span> <span class="pre">array[i][j][k]</span></code>. Slices can be passed to <a class="reference internal" href="../api_reference/_generated/warp.func.html#warp.func" title="warp.func"><code class="xref py py-func docutils literal notranslate"><span class="pre">wp.func</span></code></a> user functions provided
-the function also declares the expected array dimension. Currently, only single-index slicing is supported.</p>
+the function also declares the expected array dimension.</p>
+<p>Unlike slices of fixed-size values, the <code class="docutils literal notranslate"><span class="pre">start</span></code>, <code class="docutils literal notranslate"><span class="pre">stop</span></code>, and <code class="docutils literal notranslate"><span class="pre">step</span></code>
+components of a Warp array slice may be runtime expressions. A slice step of
+zero is invalid. A zero known at compile time raises a code-generation error. If
+a runtime step evaluates to zero, Warp reports the error and fails the kernel:
+the process aborts on CPU, while the CUDA kernel traps and reports a launch
+error.</p>
 <p>The following construction methods are provided for allocating zero-initialized and empty (non-initialized) arrays:</p>
 <ul class="simple">
 <li><p><a class="reference internal" href="../api_reference/_generated/warp.zeros.html#warp.zeros" title="warp.zeros"><code class="xref py py-func docutils literal notranslate"><span class="pre">wp.zeros()</span></code></a></p></li>
@@ -1541,8 +1550,9 @@ A full reference for operators and functions for these types is available in the
 </pre></div>
 </div>
 <p>Negative indices are wrapped around, such that <code class="docutils literal notranslate"><span class="pre">-1</span></code> refers to the last element. Slices always create new copies.</p>
-<p>Inside kernels, the <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">/</span> <span class="pre">stop</span> <span class="pre">/</span> <span class="pre">step</span></code> values of a slice must be <strong>compile-time constants</strong>.  Simple element indexing (<code class="docutils literal notranslate"><span class="pre">v[i]</span></code>, <code class="docutils literal notranslate"><span class="pre">m[i,</span> <span class="pre">j]</span></code>) may use run-time
-expressions.</p>
+<p>For these fixed-size types, the <code class="docutils literal notranslate"><span class="pre">start</span> <span class="pre">/</span> <span class="pre">stop</span> <span class="pre">/</span> <span class="pre">step</span></code> values of a slice must
+be <strong>compile-time constants</strong>. Simple element indexing (<code class="docutils literal notranslate"><span class="pre">v[i]</span></code>, <code class="docutils literal notranslate"><span class="pre">m[i,</span> <span class="pre">j]</span></code>)
+may use runtime expressions.</p>
 </section>
 <section id="unpacking">
 <h3>Unpacking<a class="headerlink" href="#unpacking" title="Link to this heading">#</a></h3>
@@ -2935,11 +2945,11 @@ with <a class="reference internal" href="../api_reference/_generated/warp.HashGr
 </section>
 </section>
 <section id="volumes">
-<h3>Volumes<a class="headerlink" href="#volumes" title="Link to this heading">#</a></h3>
+<span id="volume-sampling"></span><h3>Volumes<a class="headerlink" href="#volumes" title="Link to this heading">#</a></h3>
 <p>Sparse volumes are incredibly useful for representing grid data over large domains, such as signed distance fields
 (SDFs) for complex objects, or velocities for large-scale fluid flow. Warp supports reading sparse volumetric grids
 stored using the <a class="reference external" href="https://developer.nvidia.com/nanovdb">NanoVDB</a> standard. Users can access voxels directly
-or use built-in closest-point or trilinear interpolation to sample grid data from world or local space.</p>
+or use built-in nearest-neighbor or trilinear interpolation to sample grid data from world or index space.</p>
 <p>Volume objects can be created directly from Warp arrays containing a NanoVDB grid, from the contents of a
 standard <code class="docutils literal notranslate"><span class="pre">.nvdb</span></code> file using <a class="reference internal" href="../api_reference/_generated/warp.Volume.html#warp.Volume.load_from_nvdb" title="warp.Volume.load_from_nvdb"><code class="xref py py-func docutils literal notranslate"><span class="pre">load_from_nvdb()</span></code></a>,
 from an uncompressed in-memory buffer using <a class="reference internal" href="../api_reference/_generated/warp.Volume.html#warp.Volume.load_from_address" title="warp.Volume.load_from_address"><code class="xref py py-func docutils literal notranslate"><span class="pre">load_from_address()</span></code></a>,
@@ -2984,7 +2994,7 @@ the <cite>blosc</cite> Python package to be installed.</p>
     <span class="c1"># load sample point in world-space</span>
     <span class="n">p</span> <span class="o">=</span> <span class="n">points</span><span class="p">[</span><span class="n">tid</span><span class="p">]</span>
 
-    <span class="c1"># transform position to the volume&#39;s local-space</span>
+    <span class="c1"># transform position to the volume&#39;s index space</span>
     <span class="n">q</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">volume_world_to_index</span><span class="p">(</span><span class="n">volume</span><span class="p">,</span> <span class="n">p</span><span class="p">)</span>
 
     <span class="c1"># sample volume with trilinear interpolation</span>
@@ -3006,7 +3016,7 @@ to values in arbitrarily shaped arrays:</p>
     <span class="c1"># load sample point in world-space</span>
     <span class="n">p</span> <span class="o">=</span> <span class="n">points</span><span class="p">[</span><span class="n">tid</span><span class="p">]</span>
 
-    <span class="c1"># transform position to the volume&#39;s local-space</span>
+    <span class="c1"># transform position to the volume&#39;s index space</span>
     <span class="n">q</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">volume_world_to_index</span><span class="p">(</span><span class="n">volume</span><span class="p">,</span> <span class="n">p</span><span class="p">)</span>
 
     <span class="c1"># sample volume with trilinear interpolation</span>

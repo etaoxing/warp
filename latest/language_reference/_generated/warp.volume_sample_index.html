@@ -9,7 +9,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>warp.volume_sample_index &#8212; Warp 1.16.0.dev0</title>
+    <title>warp.volume_sample_index &#8212; Warp 1.17.0.dev2</title>
   
   
   
@@ -44,7 +44,7 @@
 
 
 
-    <script src="../../_static/documentation_options.js?v=4ae37cce"></script>
+    <script src="../../_static/documentation_options.js?v=a5afd832"></script>
     <script src="../../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -69,7 +69,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="1.16.0.dev0" />
+  <meta name="docsearch:version" content="1.17.0.dev2" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -146,11 +146,11 @@
       
     
     
-    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a></div>
     
@@ -290,11 +290,11 @@
       
     
     
-    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.16.0.dev0 - Home"/>
-    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.16.0.dev0 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.17.0.dev2 - Home"/>
+    <img src="../../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.17.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.16.0.dev0</p>
+    <p class="title logo__title">Warp 1.17.0.dev2</p>
   
 </a>
 
@@ -444,7 +444,7 @@
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Project</span></p>
 <ul class="nav bd-sidenav">
-<li class="toctree-l1"><a class="reference internal" href="../../project/contribution_guide.html">Contribution Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../../project/contribution_guide.html">Contributing to Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../project/publications.html">Publications using Warp</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../../project/changelog.html">Changelog</a></li>
 </ul>
@@ -548,10 +548,64 @@
 </td><td><ul class="simple">
 </ul>
 </td></tr></table>
-<p>Sample the volume given by <code class="docutils literal notranslate"><span class="pre">id</span></code> at the volume local-space point <code class="docutils literal notranslate"><span class="pre">uvw</span></code>.</p>
-<p>Values for allocated voxels are read from the <code class="docutils literal notranslate"><span class="pre">voxel_data</span></code> array, and <code class="docutils literal notranslate"><span class="pre">background</span></code> is used as the value of non-existing voxels.
-Interpolation should be <a class="reference internal" href="../../api_reference/_generated/warp.Volume.html#warp.Volume.CLOSEST" title="warp.Volume.CLOSEST"><code class="xref py py-attr docutils literal notranslate"><span class="pre">warp.Volume.CLOSEST</span></code></a> or <a class="reference internal" href="../../api_reference/_generated/warp.Volume.html#warp.Volume.LINEAR" title="warp.Volume.LINEAR"><code class="xref py py-attr docutils literal notranslate"><span class="pre">warp.Volume.LINEAR</span></code></a>.
-This function is available for both index grids and classical volumes.</p>
+<p>Sample the volume given by <code class="docutils literal notranslate"><span class="pre">id</span></code> at the index-space point <code class="docutils literal notranslate"><span class="pre">uvw</span></code>, reading voxel values from
+a separate <code class="docutils literal notranslate"><span class="pre">voxel_data</span></code> array.</p>
+<p>On NanoVDB <code class="docutils literal notranslate"><span class="pre">OnIndex</span></code> and <code class="docutils literal notranslate"><span class="pre">OnIndexMask</span></code> grids, each active voxel maps to a linear index into
+<code class="docutils literal notranslate"><span class="pre">voxel_data</span></code> and <code class="docutils literal notranslate"><span class="pre">background</span></code> supplies inactive voxels. On <code class="docutils literal notranslate"><span class="pre">Index</span></code> and <code class="docutils literal notranslate"><span class="pre">IndexMask</span></code> grids
+and on classical value grids, every slot in an allocated leaf maps to <code class="docutils literal notranslate"><span class="pre">voxel_data</span></code> regardless
+of its active mask; <code class="docutils literal notranslate"><span class="pre">background</span></code> is used outside allocated leaves. This lets several fields
+share one topology. See <a class="reference internal" href="../../api_reference/_generated/warp.Volume.html#warp.Volume.allocate_by_voxels" title="warp.Volume.allocate_by_voxels"><code class="xref py py-meth docutils literal notranslate"><span class="pre">warp.Volume.allocate_by_voxels()</span></code></a> and
+<a class="reference internal" href="warp.volume_lookup_index.html#warp._src.lang.volume_lookup_index" title="warp._src.lang.volume_lookup_index"><code class="xref py py-func docutils literal notranslate"><span class="pre">volume_lookup_index()</span></code></a>.</p>
+<p><code class="docutils literal notranslate"><span class="pre">uvw</span></code> is in index space (voxel coordinates) and may be fractional. Sampling modes and boundary
+conventions match <a class="reference internal" href="warp.volume_sample.html#warp._src.lang.volume_sample" title="warp._src.lang.volume_sample"><code class="xref py py-func docutils literal notranslate"><span class="pre">volume_sample()</span></code></a>; use <code class="docutils literal notranslate"><span class="pre">CLOSEST</span></code> for integer data. For
+floating-point scalar and vector data, <code class="docutils literal notranslate"><span class="pre">LINEAR</span></code> is differentiable with respect to <code class="docutils literal notranslate"><span class="pre">uvw</span></code>,
+<code class="docutils literal notranslate"><span class="pre">voxel_data</span></code>, and <code class="docutils literal notranslate"><span class="pre">background</span></code>. See the
+<a class="reference internal" href="../../user_guide/runtime.html#volume-sampling"><span class="std std-ref">Volume sampling</span></a> user-guide examples.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>id</strong> – The <code class="docutils literal notranslate"><span class="pre">id</span></code> of a <a class="reference internal" href="../../api_reference/_generated/warp.Volume.html#warp.Volume" title="warp.Volume"><code class="xref py py-class docutils literal notranslate"><span class="pre">warp.Volume</span></code></a> providing the topology and voxel indices.</p></li>
+<li><p><strong>uvw</strong> – Sampling location in index space (voxel coordinates); may be fractional.</p></li>
+<li><p><strong>sampling_mode</strong> – <a class="reference internal" href="../../api_reference/_generated/warp.Volume.html#warp.Volume.CLOSEST" title="warp.Volume.CLOSEST"><code class="xref py py-attr docutils literal notranslate"><span class="pre">warp.Volume.CLOSEST</span></code></a> or <a class="reference internal" href="../../api_reference/_generated/warp.Volume.html#warp.Volume.LINEAR" title="warp.Volume.LINEAR"><code class="xref py py-attr docutils literal notranslate"><span class="pre">warp.Volume.LINEAR</span></code></a>; use <code class="docutils literal notranslate"><span class="pre">CLOSEST</span></code> for
+integer data.</p></li>
+<li><p><strong>voxel_data</strong> – Per-voxel values indexed by each voxel’s linear index. For volumes whose
+indexable count fits in <code class="docutils literal notranslate"><span class="pre">int32</span></code>, must hold at least <a class="reference internal" href="warp.volume_voxel_count.html#warp._src.lang.volume_voxel_count" title="warp._src.lang.volume_voxel_count"><code class="xref py py-func docutils literal notranslate"><span class="pre">volume_voxel_count()</span></code></a>
+entries. <a class="reference internal" href="../../api_reference/_generated/warp.Volume.html#warp.Volume.get_voxel_count" title="warp.Volume.get_voxel_count"><code class="xref py py-meth docutils literal notranslate"><span class="pre">warp.Volume.get_voxel_count()</span></code></a> returns a host-side capacity that is safe
+for allocation but may exceed the live indexable count for rebuildable volumes. The
+array’s dtype must match <code class="docutils literal notranslate"><span class="pre">background</span></code>.</p></li>
+<li><p><strong>background</strong> – Value used for inactive voxels on <code class="docutils literal notranslate"><span class="pre">OnIndex</span></code> and <code class="docutils literal notranslate"><span class="pre">OnIndexMask</span></code> grids and
+outside allocated leaves on <code class="docutils literal notranslate"><span class="pre">Index</span></code> and <code class="docutils literal notranslate"><span class="pre">IndexMask</span></code> grids and classical value grids;
+its dtype must match <code class="docutils literal notranslate"><span class="pre">voxel_data</span></code>.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The sampled value, of the same dtype as <code class="docutils literal notranslate"><span class="pre">voxel_data</span></code>.</p>
+</dd>
+</dl>
+<p class="rubric">Example</p>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">fill</span><span class="p">(</span><span class="n">vid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]):</span>
+    <span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">,</span> <span class="n">k</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">tid</span><span class="p">()</span>
+    <span class="n">idx</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">volume_lookup_index</span><span class="p">(</span><span class="n">vid</span><span class="p">,</span> <span class="n">i</span><span class="p">,</span> <span class="n">j</span><span class="p">,</span> <span class="n">k</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">idx</span> <span class="o">&gt;=</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">d</span><span class="p">[</span><span class="n">idx</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">(</span><span class="n">i</span><span class="p">)</span> <span class="o">*</span> <span class="mf">10.0</span>
+
+<span class="nd">@wp</span><span class="o">.</span><span class="n">kernel</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">sample</span><span class="p">(</span><span class="n">vid</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">d</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">],</span> <span class="n">out</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">]):</span>
+    <span class="n">out</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">volume_sample_index</span><span class="p">(</span><span class="n">vid</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="o">.</span><span class="n">LINEAR</span><span class="p">,</span> <span class="n">d</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">)</span>
+
+<span class="n">voxels</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">1</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">0</span><span class="p">]],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3i</span><span class="p">)</span>
+<span class="n">volume</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Volume</span><span class="o">.</span><span class="n">allocate_by_voxels</span><span class="p">(</span><span class="n">voxels</span><span class="p">,</span> <span class="n">voxel_size</span><span class="o">=</span><span class="mf">1.0</span><span class="p">)</span>
+<span class="n">data</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">volume</span><span class="o">.</span><span class="n">get_voxel_count</span><span class="p">(),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">out</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">)</span>
+<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="n">fill</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="mi">1</span><span class="p">,</span> <span class="mi">1</span><span class="p">),</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">volume</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">data</span><span class="p">])</span>
+<span class="n">wp</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span><span class="n">sample</span><span class="p">,</span> <span class="n">dim</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">volume</span><span class="o">.</span><span class="n">id</span><span class="p">,</span> <span class="n">data</span><span class="p">],</span> <span class="n">outputs</span><span class="o">=</span><span class="p">[</span><span class="n">out</span><span class="p">])</span>
+<span class="nb">print</span><span class="p">(</span><span class="nb">round</span><span class="p">(</span><span class="nb">float</span><span class="p">(</span><span class="n">out</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">]),</span> <span class="mi">1</span><span class="p">))</span>
+</pre></div>
+</div>
+<div class="highlight-none notranslate"><div class="highlight"><pre><span></span>5.0
+</pre></div>
+</div>
 </dd></dl>
 
 </section>
