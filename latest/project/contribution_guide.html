@@ -9,7 +9,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Contributing to Warp &#8212; Warp 1.18.0.dev0</title>
+    <title>Contributing to Warp &#8212; Warp 1.18.0.dev2</title>
   
   
   
@@ -44,7 +44,7 @@
 
 
 
-    <script src="../_static/documentation_options.js?v=cbbedd57"></script>
+    <script src="../_static/documentation_options.js?v=583ed324"></script>
     <script src="../_static/doctools.js?v=fd6eb6e6"></script>
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
@@ -70,7 +70,7 @@
 
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="1.18.0.dev0" />
+  <meta name="docsearch:version" content="1.18.0.dev2" />
   
     
     <script src="../_static/searchtools.js"></script>
@@ -147,11 +147,11 @@
       
     
     
-    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.18.0.dev0 - Home"/>
-    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.18.0.dev0 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.18.0.dev2 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.18.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.18.0.dev0</p>
+    <p class="title logo__title">Warp 1.18.0.dev2</p>
   
 </a></div>
     
@@ -291,11 +291,11 @@
       
     
     
-    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.18.0.dev0 - Home"/>
-    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.18.0.dev0 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-blk-for-screen.svg" class="logo__image only-light" alt="Warp 1.18.0.dev2 - Home"/>
+    <img src="../_static/nvidia-logo-horiz-rgb-wht-for-screen.svg" class="logo__image only-dark pst-js-only" alt="Warp 1.18.0.dev2 - Home"/>
   
   
-    <p class="title logo__title">Warp 1.18.0.dev0</p>
+    <p class="title logo__title">Warp 1.18.0.dev2</p>
   
 </a>
 
@@ -414,6 +414,7 @@
 <li class="toctree-l2"><a class="reference internal" href="../user_guide/execution_and_performance/memory_management.html">Memory Allocation and Access</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../user_guide/execution_and_performance/profiling.html">Profiling</a></li>
 <li class="toctree-l2"><a class="reference internal" href="../user_guide/execution_and_performance/deterministic_execution.html">Deterministic Execution</a></li>
+<li class="toctree-l2"><a class="reference internal" href="../user_guide/execution_and_performance/reducing_compilation_and_startup_time.html">Reducing Compilation and Startup Time</a></li>
 </ul>
 </details></li>
 <li class="toctree-l1"><a class="reference internal" href="../user_guide/configuration.html">Configuration</a></li>
@@ -810,7 +811,7 @@ integration (e.g., VS Code format-on-save), install the version specified in <co
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Ubuntu/Debian - Install from apt.llvm.org</span>
 <span class="c1"># See https://apt.llvm.org/ for repository setup instructions</span>
 <span class="c1"># Check .pre-commit-config.yaml for the current version</span>
-sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>clang-format-21
+sudo<span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>clang-format-23
 </pre></div>
 </div>
 <p>For other platforms, consult the LLVM documentation for installation instructions. We recommend using pre-commit
@@ -970,11 +971,13 @@ multi-process-safe; concurrent clears cause LLVM crashes. The test suite runner 
 <span class="k">def</span><span class="w"> </span><span class="nf">test_amazing_code_test_one</span><span class="p">(</span><span class="n">test</span><span class="p">,</span> <span class="n">device</span><span class="p">):</span>
     <span class="k">pass</span>
 
+
 <span class="n">devices</span> <span class="o">=</span> <span class="n">get_test_devices</span><span class="p">()</span>
 
 
 <span class="k">class</span><span class="w"> </span><span class="nc">TestAmazingCode</span><span class="p">(</span><span class="n">unittest</span><span class="o">.</span><span class="n">TestCase</span><span class="p">):</span>
     <span class="k">pass</span>
+
 
 <span class="n">add_function_test</span><span class="p">(</span><span class="n">TestAmazingCode</span><span class="p">,</span> <span class="s2">&quot;test_amazing_code_test_one&quot;</span><span class="p">,</span> <span class="n">test_amazing_code_test_one</span><span class="p">,</span> <span class="n">devices</span><span class="o">=</span><span class="n">devices</span><span class="p">)</span>
 
