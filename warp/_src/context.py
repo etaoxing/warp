@@ -68,6 +68,7 @@ import numpy as np
 import warp
 import warp._src.build
 import warp._src.codegen
+import warp._src.gemm_pipeline
 import warp._src.module_registry
 import warp.config
 from warp._src.codegen import WarpCodegenError, WarpCodegenTypeError, _codegen_lock, synchronized
@@ -1030,6 +1031,10 @@ class KernelHooks:
         backward_smem_bytes=0,
         cluster_dim=1,
         det_launch_meta: DeterministicMeta | None = None,
+        gemm_pipeline_meta: list[dict] | None = None,
+        gemm_pipeline_enabled: bool = True,
+        gemm_pipeline_smem_bytes: int | None = None,
+        gemm_fallback_smem_error: str | None = None,
         forward_smem_shortfall: str | None = None,
         backward_smem_shortfall: str | None = None,
     ):
@@ -1054,6 +1059,20 @@ class KernelHooks:
         # Launch metadata for this module variant; kernel.adj.det_meta is
         # codegen scratch and may describe a different variant.
         self.det_launch_meta = det_launch_meta
+        self.gemm_pipeline_meta = gemm_pipeline_meta if gemm_pipeline_meta is not None else []
+        self.gemm_pipeline_enabled = gemm_pipeline_enabled
+        self.gemm_pipeline_smem_bytes = (
+            forward_smem_bytes if gemm_pipeline_smem_bytes is None else gemm_pipeline_smem_bytes
+        )
+        self.gemm_fallback_smem_error = gemm_fallback_smem_error
+
+    def select_forward_smem_bytes(self, pipeline_params: Sequence[ctypes.c_void_p]) -> int:
+        """Select the smaller workspace only when every tile_gemm pipeline is active."""
+        if self.gemm_pipeline_enabled and pipeline_params and all(param.value for param in pipeline_params):
+            return self.gemm_pipeline_smem_bytes
+        if self.gemm_fallback_smem_error is not None:
+            raise RuntimeError(self.gemm_fallback_smem_error)
+        return self.forward_smem_bytes
 
 
 # Hardware upper bound for the non-portable cluster range (9-16), valid on
@@ -1714,6 +1733,7 @@ def func_replay(forward_fn):
         f.custom_replay_func = Function(
             replay_fn,
             key=f"replay_{f.key}",
+            native_func=f"replay_{f.native_func}",
             namespace=f.namespace,
             input_types=f.input_types,
             value_func=f.value_func,
@@ -3219,6 +3239,8 @@ class ModuleBuilder:
         self.fatbins = {}  # map from <some identifier> to fatbins, to add at link time
         self.ltoirs = {}  # map from lto symbol to lto binary
         self.ltoirs_decl = {}  # map from lto symbol to lto forward declaration
+        self.native_code = {}  # map from identifier to generated CUDA helper source
+        self.gemm_pipeline_metadata = {}  # map from tile_gemm LTO symbol to pipeline traits
         self.shared_memory_bytes = {}  # map from lto symbol to shared memory requirements
 
         if hasher is None:
@@ -3238,6 +3260,8 @@ class ModuleBuilder:
 
         # propagate callee replay/reverse shared-memory needs into backward-kernel sizing
         self._propagate_backward_shared_memory()
+
+        warp._src.gemm_pipeline.GemmPipelineCodegen.finalize(obj.adj for obj in (*self.functions, *self.kernels))
 
     def build_struct_recursive(self, struct: warp._src.codegen.Struct):
         structs = []
@@ -3438,12 +3462,25 @@ class ModuleBuilder:
     def build_meta(self):
         meta = {}
 
+        if self.gemm_pipeline_metadata:
+            meta["_cuda_arch_suffix"] = "a"
+
         for kernel in self.kernels:
             forward_name = warp._src.codegen.cuda_kernel_forward_name(kernel)
             backward_name = warp._src.codegen.cuda_kernel_backward_name(kernel)
             options = self.options | kernel.options
 
             meta[forward_name + "_smem_bytes"] = kernel.adj.get_total_required_shared()
+            gemm_pipelines = kernel.adj.gemm_pipeline.kernel_metadata()
+            if gemm_pipelines:
+                meta[forward_name + "_gemm_pipelines"] = gemm_pipelines
+                meta[forward_name + "_gemm_fallback_smem_bytes"] = kernel.adj.get_total_required_shared_fallback()
+                if kernel.adj.gemm_pipeline.has_unbound_pipeline:
+                    meta[forward_name + "_gemm_pipeline_smem_bytes"] = kernel.adj.get_total_required_shared()
+                else:
+                    meta[forward_name + "_gemm_pipeline_smem_bytes"] = (
+                        kernel.adj.get_total_required_shared_gemm_pipeline()
+                    )
             if options["enable_backward"] and options.get("entry_point_abi", "warp") == "warp":
                 meta[backward_name + "_smem_bytes"] = kernel.adj.get_total_required_shared_backward()
 
@@ -3565,6 +3602,9 @@ class ModuleBuilder:
                 source += self.ltoirs_decl[symbol] + "\n"
             source += "}\n"
 
+        for identifier in sorted(self.native_code):
+            source += self.native_code[identifier]
+
         # code-gen structs
         tile_helper_structs = self._get_tile_helper_struct_hashes()
         visited_structs = set()
@@ -3670,7 +3710,13 @@ class ModuleExec:
         self.module_hash = module_hash
         self.device = device
         self.kernel_hooks = {}
+        self.gemm_pipeline_resources = {}
+        self._gemm_pipeline_lock = threading.Lock()
         self.meta = meta
+        for name, requirements in self.meta.items():
+            if name.endswith("_gemm_pipelines"):
+                for requirement in requirements:
+                    warp._src.gemm_pipeline.complete_gemm_pipeline_metadata(requirement)
         self.block_dim = block_dim
         self.det_launch_meta_map = det_launch_meta_map if det_launch_meta_map is not None else {}
         # Compute capability the loaded binary was actually compiled for (None for
@@ -3685,12 +3731,149 @@ class ModuleExec:
                 if self.device.is_cuda:
                     # use CUDA context guard to avoid side effects during garbage collection
                     with self.device.context_guard:
+                        stream = self.device.stream
+                        if self.gemm_pipeline_resources:
+                            # Pipelines can be reused from any stream. Complete every
+                            # in-flight user before destroying their device state.
+                            runtime.core.wp_cuda_context_synchronize(self.device.context)
+                        for resource in self.gemm_pipeline_resources.values():
+                            self._launch_gemm_pipeline_helper(
+                                resource["destroy_kernel"],
+                                [ctypes.c_void_p(resource["ptr"])],
+                                stream,
+                            )
+                        if self.gemm_pipeline_resources:
+                            runtime.core.wp_cuda_stream_synchronize(stream.cuda_stream)
+                            self.gemm_pipeline_resources.clear()
                         runtime.core.wp_cuda_unload_module(self.device.context, self.handle)
                 else:
                     runtime.llvm.wp_unload_obj(self.handle.encode("utf-8"))
-            except (TypeError, AttributeError):
-                # Suppress TypeError and AttributeError when callables become None during shutdown
+            except (TypeError, AttributeError, RuntimeError):
+                # Suppress cleanup failures when callables become unavailable during shutdown.
                 pass
+
+    def _launch_gemm_pipeline_helper(self, name: str, params: list, stream: Stream) -> None:
+        function = runtime.core.wp_cuda_get_kernel(self.device.context, self.handle, name.encode("utf-8"))
+        if not function:
+            raise RuntimeError(f"Failed to find tile_gemm helper kernel '{name}'")
+        kernel_args = [ctypes.c_void_p(ctypes.addressof(value)) for value in params]
+        kernel_params = (ctypes.c_void_p * len(kernel_args))(*kernel_args)
+        if runtime.core.wp_cuda_launch_kernel(
+            self.device.context,
+            function,
+            1,
+            0,
+            1,
+            0,
+            1,
+            0,
+            kernel_params,
+            stream.cuda_stream,
+            None,
+        ):
+            raise RuntimeError(f"Failed to launch tile_gemm helper kernel '{name}'")
+
+    def get_gemm_pipeline_params(
+        self,
+        requirements: list[dict],
+        args: Sequence[Any],
+        stream: Stream,
+        enabled: bool = True,
+    ):
+        """Return hidden pipeline pointers, creating eligible resources before launch."""
+        if not enabled:
+            return [ctypes.c_void_p() for _ in requirements]
+
+        params = []
+        for requirement in requirements:
+            a = args[requirement["a_arg"]]
+            b = args[requirement["b_arg"]]
+            a_itemsize = warp._src.types.type_size_in_bytes(a.dtype) if isinstance(a, Array) else 0
+            b_itemsize = warp._src.types.type_size_in_bytes(b.dtype) if isinstance(b, Array) else 0
+            a_shape = tuple(requirement["a_shape"])
+            b_shape = tuple(requirement["b_shape"])
+            a_strides = tuple(stride * a_itemsize for stride in requirement["a_element_strides"])
+            b_strides = tuple(stride * b_itemsize for stride in requirement["b_element_strides"])
+
+            eligible = (
+                isinstance(a, Array)
+                and isinstance(b, Array)
+                and a.device == self.device
+                and b.device == self.device
+                and a.ndim == 2
+                and b.ndim == 2
+                and tuple(a.shape) == a_shape
+                and tuple(b.shape) == b_shape
+                and tuple(a.strides) == a_strides
+                and tuple(b.strides) == b_strides
+                and a.ptr
+                and b.ptr
+                and a.ptr % 16 == 0
+                and b.ptr % 16 == 0
+                and a.strides[0] % 16 == 0
+                and b.strides[0] % 16 == 0
+            )
+            if not eligible:
+                params.append(ctypes.c_void_p())
+                continue
+
+            # Eligibility already fixes the shapes and strides for this specialization.
+            key = (requirement["lto_symbol"], a.ptr, b.ptr)
+            resource = self.gemm_pipeline_resources.get(key)
+            if resource is None:
+                # ctypes calls release the GIL; publish each initialized resource
+                # once so competing launches cannot replace and free its storage.
+                with self._gemm_pipeline_lock:
+                    resource = self.gemm_pipeline_resources.get(key)
+                    if resource is None:
+                        if runtime.core.wp_cuda_stream_is_capturing(stream.cuda_stream):
+                            raise RuntimeError(
+                                "tile_gemm() must be launched once with these arrays outside CUDA graph capture "
+                                "so its device pipeline can be initialized."
+                            )
+
+                        alignment = max(1, requirement["device_pipeline_storage_alignment"])
+                        # Async allocation and initialization must use the same stream.
+                        with warp.ScopedStream(stream):
+                            storage = warp.empty(
+                                requirement["device_pipeline_storage_size"] + alignment - 1,
+                                dtype=warp.uint8,
+                                device=self.device,
+                            )
+                        pipeline_ptr = (storage.ptr + alignment - 1) & ~(alignment - 1)
+                        init_params = [
+                            ctypes.c_void_p(pipeline_ptr),
+                            ctypes.c_void_p(a.ptr),
+                            ctypes.c_void_p(b.ptr),
+                        ]
+                        self._launch_gemm_pipeline_helper(requirement["init_kernel"], init_params, stream)
+                        resource = {
+                            "storage": storage,
+                            "ptr": pipeline_ptr,
+                            "destroy_kernel": requirement["destroy_kernel"],
+                            "init_stream": stream,
+                            "ready": stream.record_event(),
+                            "ready_complete": False,
+                        }
+                        self.gemm_pipeline_resources[key] = resource
+
+            if not resource["ready_complete"]:
+                init_stream = resource["init_stream"].cuda_stream
+                same_stream = stream.cuda_stream == init_stream
+                # Event queries are forbidden during capture. Once completion is
+                # observed outside capture, subsequent launches need no dependency.
+                if (
+                    not runtime.captures
+                    and not runtime.core.wp_cuda_stream_is_capturing(stream.cuda_stream)
+                    and (same_stream or not runtime.core.wp_cuda_stream_is_capturing(init_stream))
+                    and resource["ready"].is_complete
+                ):
+                    resource["ready_complete"] = True
+                elif not same_stream:
+                    stream.wait_event(resource["ready"], external=True)
+
+            params.append(ctypes.c_void_p(resource["ptr"]))
+        return params
 
     def _get_forward_cuda_kernel(self, kernel):
         """Return the forward CUDA function without initializing launch hooks.
@@ -3747,19 +3930,27 @@ class ModuleExec:
             # look up the required shared memory size for each kernel from module metadata
             forward_smem_bytes = self.meta[forward_name + "_smem_bytes"]
             backward_smem_bytes = self.meta[backward_name + "_smem_bytes"] if options["enable_backward"] else 0
+            gemm_pipeline_meta = self.meta.get(forward_name + "_gemm_pipelines", [])
+            gemm_fallback_smem_bytes = self.meta.get(forward_name + "_gemm_fallback_smem_bytes", forward_smem_bytes)
+            gemm_pipeline_smem_bytes = self.meta.get(forward_name + "_gemm_pipeline_smem_bytes", forward_smem_bytes)
+            gemm_pipeline_enabled = True
+            gemm_fallback_smem_error = None
 
             # configure kernels maximum shared memory size
             max_smem_bytes = self.device.max_shared_memory_per_block
 
-            def configure_smem(kernel_func, direction: str, requested: int) -> str | None:
-                """Configure dynamic shared memory, warning and returning a shortfall clause on failure."""
+            def configure_smem(kernel_func, requested: int) -> tuple[bool, str | None]:
+                """Configure dynamic shared memory and describe a resource shortfall on failure."""
                 if runtime.core.wp_cuda_configure_kernel_shared_memory(kernel_func, requested):
-                    return None
+                    return True, None
 
                 static_smem_bytes = runtime.core.wp_cuda_get_kernel_static_shared_memory(
                     self.device.context, kernel_func
                 )
                 shortfall = _smem_shortfall_clause(self.block_dim, requested, static_smem_bytes, max_smem_bytes)
+                return False, shortfall
+
+            def warn_smem_failure(direction: str, requested: int, shortfall: str | None):
                 if shortfall is None:
                     # The driver rejected the request for some reason other than overflow, or the
                     # static size is unknown, so there is no budget to report.
@@ -3767,18 +3958,57 @@ class ModuleExec:
                         f"Failed to configure {requested} bytes of dynamic shared memory for kernel "
                         f"'{kernel.key}' ({direction}) on {self.device.alias}."
                     )
-                    return None
+                    return
 
                 log_warning(
                     f"Failed to configure dynamic shared memory for kernel '{kernel.key}' ({direction}) on "
                     f"{self.device.alias}: requests {requested} bytes, {shortfall}."
                 )
-                return shortfall
 
-            forward_smem_shortfall = configure_smem(forward_kernel, "forward", forward_smem_bytes)
-            backward_smem_shortfall = (
-                configure_smem(backward_kernel, "backward", backward_smem_bytes) if options["enable_backward"] else None
-            )
+            forward_smem_configured, forward_smem_shortfall = configure_smem(forward_kernel, forward_smem_bytes)
+            if not forward_smem_configured and gemm_pipeline_meta and gemm_fallback_smem_bytes < forward_smem_bytes:
+                fallback_configured, fallback_shortfall = configure_smem(forward_kernel, gemm_fallback_smem_bytes)
+                if fallback_configured:
+                    log_warning(
+                        f"tile_gemm() device pipeline disabled for kernel '{kernel.key}' on {self.device.alias}: "
+                        f"its {forward_smem_bytes}-byte dynamic shared-memory request does not fit; using the "
+                        f"portable fallback with {gemm_fallback_smem_bytes} bytes."
+                    )
+                    forward_smem_bytes = gemm_fallback_smem_bytes
+                    forward_smem_shortfall = None
+                    gemm_pipeline_enabled = False
+                else:
+                    # Keep the smallest viable implementation selected even when neither
+                    # shared-memory request fits, so the eventual launch error describes
+                    # the portable path rather than the larger pipeline workspace.
+                    forward_smem_bytes = gemm_fallback_smem_bytes
+                    forward_smem_shortfall = fallback_shortfall
+                    gemm_pipeline_enabled = False
+                    warn_smem_failure("forward", gemm_fallback_smem_bytes, fallback_shortfall)
+            elif not forward_smem_configured and gemm_pipeline_meta and gemm_pipeline_smem_bytes < forward_smem_bytes:
+                pipeline_configured, _ = configure_smem(forward_kernel, gemm_pipeline_smem_bytes)
+                if pipeline_configured:
+                    # Some kernels fit only when returned tiles back the pipeline
+                    # workspace. Mixed or ineligible inputs still need the full
+                    # allocation and must fail before launching the user kernel.
+                    detail = forward_smem_shortfall or "the device rejected that shared-memory request"
+                    gemm_fallback_smem_error = (
+                        f"tile_gemm() kernel '{kernel.key}' on {self.device.alias} requires eligible pipeline inputs: "
+                        f"the portable or mixed launch needs {forward_smem_bytes} bytes of dynamic shared memory, "
+                        f"{detail}."
+                    )
+                    forward_smem_shortfall = None
+                else:
+                    warn_smem_failure("forward", forward_smem_bytes, forward_smem_shortfall)
+            elif not forward_smem_configured:
+                warn_smem_failure("forward", forward_smem_bytes, forward_smem_shortfall)
+
+            if options["enable_backward"]:
+                backward_smem_configured, backward_smem_shortfall = configure_smem(backward_kernel, backward_smem_bytes)
+                if not backward_smem_configured:
+                    warn_smem_failure("backward", backward_smem_bytes, backward_smem_shortfall)
+            else:
+                backward_smem_shortfall = None
 
             # Resolve the effective cluster_dim once here (cached on the hooks)
             # and configure the cluster attribute on the loaded CUfunction(s).
@@ -3823,6 +4053,10 @@ class ModuleExec:
                 backward_smem_bytes,
                 cluster_dim=effective_cluster_dim,
                 det_launch_meta=self.det_launch_meta_map.get(name),
+                gemm_pipeline_meta=gemm_pipeline_meta,
+                gemm_pipeline_enabled=gemm_pipeline_enabled,
+                gemm_pipeline_smem_bytes=gemm_pipeline_smem_bytes,
+                gemm_fallback_smem_error=gemm_fallback_smem_error,
                 forward_smem_shortfall=forward_smem_shortfall,
                 backward_smem_shortfall=backward_smem_shortfall,
             )
@@ -4440,12 +4674,24 @@ class Module:
 
         return output_name
 
-    def _get_meta_name(self, block_dim: int | None = None) -> str:
+    def _get_meta_name(self, block_dim: int | None = None, output_name: str | None = None) -> str:
         """Get the filename to use for the module metadata file.
 
         This is only the filename. It should be used to form a path.
         """
+        if output_name is not None:
+            return f"{os.path.splitext(output_name)[0]}.meta"
         return f"{self.get_module_identifier(block_dim=block_dim)}.meta"
+
+    def _get_cached_cuda_arch_suffix(self, output_dir, output_arch, block_dim=None):
+        """Discover linked-code requirements only from this target's binary metadata."""
+        for suffix in ("a", "f"):
+            output_name = self._get_compile_output_name(None, output_arch, suffix, False, block_dim=block_dim)
+            meta_path = os.path.join(output_dir, self._get_meta_name(block_dim, output_name))
+            if os.path.exists(os.path.join(output_dir, output_name)):
+                if _read_required_cuda_arch_suffix(meta_path) == suffix:
+                    return suffix
+        return None
 
     @staticmethod
     def _write_meta(output_meta_path: str | os.PathLike, meta: dict) -> None:
@@ -4497,7 +4743,7 @@ class Module:
         output_arch: int | None = None,
         use_ptx: bool | None = None,
         options: dict | None = None,
-    ) -> bool:
+    ) -> tuple[bool, str, int | None]:
         """Compile this module for a specific device.
 
         Note that this function only generates and compiles code. The resulting
@@ -4514,8 +4760,8 @@ class Module:
                 current config.
 
         Returns:
-            ``True`` if compilation was performed, ``False`` if a cached
-            binary already exists and compilation was skipped.
+            A tuple containing whether compilation was performed, the output
+            filename, and the final output architecture.
         """
         if options is None:
             options = self.resolve_options(warp.config)
@@ -4526,12 +4772,141 @@ class Module:
         # output_arch is None for CPU targets, set to a SM architecture for CUDA
         is_cpu = output_arch is None
 
-        options = options | {"output_arch": output_arch}
+        device_arch = device.arch if device is not None and device.is_cuda else output_arch
+        options = options | {"output_arch": output_arch, "device_arch": device_arch}
 
-        # Reject cluster_dim > 1 when the compile target drops the cluster
+        # ``options`` is the resolved dict for the active block_dim variant
+        # (set by ``Module.load`` via ``resolve_options(block_dim=...)``). Use
+        # it for every cache-path lookup below so the .meta filename and
+        # module dir line up with the variant being compiled -- not the
+        # module-level default in ``self.options["block_dim"]``.
+        active_block_dim = options["block_dim"]
+
+        # Resolve output directory early so cached metadata can restore any
+        # architecture requirement imposed by linked device code.
+        module_name_short = self.get_module_identifier(block_dim=active_block_dim)
+
+        if output_dir is None:
+            output_dir = os.path.join(warp.config.kernel_cache_dir, f"{module_name_short}")
+        else:
+            output_dir = os.fspath(output_dir)
+
+        meta_path = os.path.join(output_dir, self._get_meta_name(block_dim=active_block_dim))
+        cached_meta = _read_cached_module_meta(meta_path) if not is_cpu else {}
+        required_arch_suffix = (
+            self._get_cached_cuda_arch_suffix(output_dir, device_arch, active_block_dim) if not is_cpu else None
+        )
+        if required_arch_suffix == "a" and device is not None:
+            output_arch = device.arch
+            options = options | {"output_arch": output_arch}
+        if required_arch_suffix is not None:
+            use_ptx = False
+
+        # Resolve the arch suffix once for both the output filename and the build call.
+        if not is_cpu:
+            init()
+            arch_suffix = _validate_cuda_arch_suffix(
+                output_arch,
+                device_arch=device.arch if device else output_arch,
+                toolkit_version=runtime.toolkit_version,
+                device_name=device.alias if device else None,
+                required_suffix=required_arch_suffix,
+            )
+        else:
+            arch_suffix = ""
+
+        automatic_output_name = output_name is None
+        if output_name is None:
+            output_name = self._get_compile_output_name(
+                device, output_arch, arch_suffix, use_ptx, block_dim=active_block_dim
+            )
+        cached_output_meta_path = (
+            os.path.join(
+                output_dir,
+                self._get_meta_name(block_dim=active_block_dim, output_name=output_name),
+            )
+            if required_arch_suffix is not None or cached_meta.get("_cuda_binary_metadata") is True
+            else meta_path
+        )
+
+        # Skip compilation if the binary and metadata are already cached
+        # (forced rebuild when verifying autograd array access)
+        if (
+            warp.config.cache_kernels
+            and not options.get("verify_autograd_array_access", False)
+            and os.path.exists(os.path.join(output_dir, output_name))
+            and os.path.exists(cached_output_meta_path)
+        ):
+            return False, output_name, output_arch
+
+        # Python codegen window -- runs serialised under ``_codegen_lock``
+        # inside ``_run_codegen``. Snapshots all builder state needed by
+        # the native compile below, so the native step (the dominant cost)
+        # runs unlocked and parallelises across N modules.
+        #
+        # A kernel that fails here fails the module, exactly as a native
+        # compile error does. The module is the compilation unit, so a
+        # successful build has to mean every kernel in it built; dropping the
+        # failing kernel and continuing would leave the module claiming
+        # kernels its binary does not contain.
+        try:
+            source_str, source_code_ext, meta, ltoir_values, fatbin_values = self._run_codegen(options, is_cpu)
+        except Exception as e:
+            self._record_build_failure(device, is_cpu, active_block_dim, e)
+            raise
+
+        generated_arch_suffix = meta.get("_cuda_arch_suffix") if not is_cpu else None
+        if generated_arch_suffix is not None:
+            # Linked architecture-specific device code can have different helper
+            # symbols and storage requirements on each target. Keep its launch
+            # metadata beside the corresponding binary rather than in the one
+            # module-wide metadata file shared by all CUDA architectures.
+            meta["_cuda_binary_metadata"] = True
+            required_arch_suffix = generated_arch_suffix
+            use_ptx = False
+            final_output_arch = device.arch if device is not None else output_arch
+            if final_output_arch != output_arch:
+                output_arch = final_output_arch
+                options = options | {"output_arch": output_arch}
+                try:
+                    source_str, source_code_ext, meta, ltoir_values, fatbin_values = self._run_codegen(options, is_cpu)
+                except Exception as e:
+                    self._record_build_failure(device, is_cpu, active_block_dim, e)
+                    raise
+                if meta.get("_cuda_arch_suffix") != required_arch_suffix:
+                    error = RuntimeError("Linked device-code requirements changed while retargeting the CUDA module.")
+                    self._record_build_failure(device, is_cpu, active_block_dim, error)
+                    raise error
+
+            arch_suffix = _validate_cuda_arch_suffix(
+                output_arch,
+                device_arch=device.arch if device else output_arch,
+                toolkit_version=runtime.toolkit_version,
+                device_name=device.alias if device else None,
+                required_suffix=required_arch_suffix,
+            )
+            if automatic_output_name:
+                output_name = self._get_compile_output_name(
+                    device, output_arch, arch_suffix, use_ptx, block_dim=active_block_dim
+                )
+            cached_output_meta_path = os.path.join(
+                output_dir,
+                self._get_meta_name(block_dim=active_block_dim, output_name=output_name),
+            )
+
+            # Code generation was required to discover the linked-code target,
+            # but another process or an earlier run may already have compiled it.
+            if (
+                warp.config.cache_kernels
+                and not options.get("verify_autograd_array_access", False)
+                and os.path.exists(os.path.join(output_dir, output_name))
+                and os.path.exists(cached_output_meta_path)
+            ):
+                return False, output_name, output_arch
+
+        # Reject cluster_dim > 1 when the final compile target drops the cluster
         # attribute (status == "dropped"); see _cluster_dim_target_status.
         if not is_cpu and output_arch < 90:
-            device_arch = device.arch if device is not None else None
             if _cluster_dim_target_status(device_arch, output_arch) == "dropped":
                 # Validate the same live unique-kernel set that codegen emits.
                 # self.kernels keeps only the latest kernel per key, so a kernel
@@ -4550,66 +4925,6 @@ class Module:
                             f"warp.config.ptx_target_arch to >= 90, target a cluster-capable arch, or build "
                             f"CUBIN for a cluster-capable device) to use clustering, or remove cluster_dim."
                         )
-
-        # ``options`` is the resolved dict for the active block_dim variant
-        # (set by ``Module.load`` via ``resolve_options(block_dim=...)``). Use
-        # it for every cache-path lookup below so the .meta filename and
-        # module dir line up with the variant being compiled -- not the
-        # module-level default in ``self.options["block_dim"]``.
-        active_block_dim = options["block_dim"]
-
-        # Resolve the arch suffix once for both the output filename and the build call
-        if not is_cpu:
-            init()
-            arch_suffix = _validate_cuda_arch_suffix(
-                output_arch,
-                device_arch=device.arch if device else output_arch,
-                toolkit_version=runtime.toolkit_version,
-                device_name=device.alias if device else None,
-            )
-        else:
-            arch_suffix = ""
-
-        if output_name is None:
-            output_name = self._get_compile_output_name(
-                device, output_arch, arch_suffix, use_ptx, block_dim=active_block_dim
-            )
-
-        # Resolve output directory early so we can check for cached binaries
-        module_name_short = self.get_module_identifier(block_dim=active_block_dim)
-
-        if output_dir is None:
-            output_dir = os.path.join(warp.config.kernel_cache_dir, f"{module_name_short}")
-        else:
-            output_dir = os.fspath(output_dir)
-
-        # Skip compilation if the binary and metadata are already cached
-        # (forced rebuild when verifying autograd array access)
-        if (
-            warp.config.cache_kernels
-            and not options.get("verify_autograd_array_access", False)
-            and os.path.exists(os.path.join(output_dir, output_name))
-            and os.path.exists(os.path.join(output_dir, self._get_meta_name(block_dim=active_block_dim)))
-        ):
-            return False
-
-        # Python codegen window -- runs serialised under ``_codegen_lock``
-        # inside ``_run_codegen``. Snapshots all builder state needed by
-        # the native compile below, so the native step (the dominant cost)
-        # runs unlocked and parallelises across N modules.
-        #
-        # A kernel that fails here fails the module, exactly as a native
-        # compile error does. The module is the compilation unit, so a
-        # successful build has to mean every kernel in it built; dropping the
-        # failing kernel and continuing would leave the module claiming
-        # kernels its binary does not contain.
-        try:
-            source_str, source_code_ext, meta, ltoir_values, fatbin_values = self._run_codegen(options, is_cpu)
-        except Exception as e:
-            self._record_build_failure(device, is_cpu, active_block_dim, e)
-            raise
-
-        meta_path = os.path.join(output_dir, self._get_meta_name(block_dim=active_block_dim))
 
         build_dir = os.path.normpath(output_dir) + f"_p{os.getpid()}_t{threading.get_ident()}"
 
@@ -4707,9 +5022,28 @@ class Module:
         # ------------------------------------------------------------
         # write meta data (already produced by ``_run_codegen`` above)
 
-        output_meta_path = os.path.join(build_dir, self._get_meta_name(block_dim=active_block_dim))
+        # Portable and accelerated CUDA variants can coexist in this directory.
+        # Each needs its own metadata, even when another target uses a pipeline.
+        uses_binary_metadata = not is_cpu
+        if uses_binary_metadata:
+            meta["_cuda_binary_metadata"] = True
+        output_meta_name = self._get_meta_name(
+            block_dim=active_block_dim,
+            output_name=output_name if uses_binary_metadata else None,
+        )
+        output_meta_path = os.path.join(build_dir, output_meta_name)
 
         self._write_meta(output_meta_path, meta)
+
+        # Discover per-binary metadata without imposing one target's linked-code
+        # requirements on the other binaries in this directory.
+        output_manifest_path = None
+        if uses_binary_metadata:
+            output_manifest_path = os.path.join(build_dir, self._get_meta_name(block_dim=active_block_dim))
+            self._write_meta(
+                output_manifest_path,
+                {"_cuda_binary_metadata": True},
+            )
 
         # -----------------------------------------------------------
         # update cache
@@ -4731,15 +5065,25 @@ class Module:
                     # another process likely updated the module dir first
                     pass
 
-            if not os.path.exists(meta_path) or self.options["strip_hash"]:
+            final_output_meta_path = os.path.join(output_dir, output_meta_name)
+            if not os.path.exists(final_output_meta_path) or self.options["strip_hash"]:
                 # copy our output file to the destination module
                 # this is necessary in case different processes
                 # have different GPU architectures / devices
                 try:
-                    os.replace(output_meta_path, meta_path)
+                    os.replace(output_meta_path, final_output_meta_path)
                 except OSError:
                     # another process likely updated the module dir first
                     pass
+
+            if output_manifest_path is not None:
+                cached_manifest = _read_cached_module_meta(meta_path)
+                if cached_manifest.get("_cuda_binary_metadata") is not True or self.options["strip_hash"]:
+                    try:
+                        os.replace(output_manifest_path, meta_path)
+                    except OSError:
+                        # another process likely updated the module dir first
+                        pass
 
             try:
                 final_source_path = os.path.join(output_dir, os.path.basename(source_code_path))
@@ -4755,7 +5099,7 @@ class Module:
             # clean up build_dir used for this process regardless
             shutil.rmtree(build_dir, ignore_errors=True)
 
-        return True
+        return True, output_name, output_arch
 
     def load(
         self,
@@ -4834,19 +5178,25 @@ class Module:
                 else:
                     module_load_timer.extra_msg = " (cached)"
             else:
-                output_name = self._get_compile_output_name(device, block_dim=active_block_dim)
                 output_arch = self._get_compile_arch(device)
 
                 module_dir = os.path.join(warp.config.kernel_cache_dir, module_name_short)
                 meta_path = os.path.join(module_dir, self._get_meta_name(block_dim=active_block_dim))
-                binary_path = os.path.join(module_dir, output_name)
 
                 try:
-                    compiled = self._compile(device, module_dir, output_name, output_arch, options=options)
+                    compiled, output_name, output_arch = self._compile(
+                        device, module_dir, output_arch=output_arch, options=options
+                    )
                 except Exception as e:
                     module_load_timer.extra_msg = " (error)"
                     raise e
 
+                binary_path = os.path.join(module_dir, output_name)
+                if device.is_cuda and _read_cached_module_meta(meta_path).get("_cuda_binary_metadata") is True:
+                    meta_path = os.path.join(
+                        module_dir,
+                        self._get_meta_name(block_dim=active_block_dim, output_name=output_name),
+                    )
                 module_load_timer.extra_msg = " (compiled)" if compiled else " (cached)"
 
             det_launch_meta_map = self._snapshot_deterministic_metadata(active_block_dim, options, rebuild=not compiled)
@@ -6037,6 +6387,7 @@ def _validate_cuda_arch_suffix(
     device_arch: int,
     toolkit_version: tuple[int, int] | None,
     device_name: str | None = None,
+    required_suffix: str | None = None,
 ) -> str:
     """Validate :data:`warp.config.cuda_arch_suffix` and return the suffix string.
 
@@ -6048,6 +6399,8 @@ def _validate_cuda_arch_suffix(
         device_arch: The architecture of the target device (or the AOT target).
         toolkit_version: The CUDA toolkit version as ``(major, minor)``, or ``None``.
         device_name: Optional device name for error messages.
+        required_suffix: Architecture suffix required by linked device code. When
+            provided, it takes precedence over the global configuration.
 
     Returns:
         The validated suffix string (``"a"``, ``"f"``, or ``""``).
@@ -6055,7 +6408,13 @@ def _validate_cuda_arch_suffix(
     Raises:
         RuntimeError: If the suffix is invalid for the target architecture or toolkit.
     """
-    suffix = warp.config.cuda_arch_suffix
+    configured_suffix = warp.config.cuda_arch_suffix
+    if required_suffix is not None and configured_suffix not in (None, required_suffix):
+        raise RuntimeError(
+            f"Linked device code requires cuda_arch_suffix={required_suffix!r}, "
+            f"but cuda_arch_suffix is configured as {configured_suffix!r}."
+        )
+    suffix = required_suffix if required_suffix is not None else configured_suffix
     if suffix is None:
         return ""
 
@@ -6091,6 +6450,25 @@ def _validate_cuda_arch_suffix(
             f"as the device. sm_{device_arch} and output sm_{output_arch} belong to different families."
         )
 
+    return suffix
+
+
+def _read_cached_module_meta(meta_path: str | os.PathLike) -> dict:
+    """Read cached module metadata, returning an empty dict when unavailable."""
+    try:
+        with open(meta_path) as meta_file:
+            meta = json.load(meta_file)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _read_required_cuda_arch_suffix(meta_path: str | os.PathLike) -> str | None:
+    """Read the architecture suffix required by a cached module, if any."""
+    suffix = _read_cached_module_meta(meta_path).get("_cuda_arch_suffix")
+
+    if suffix is not None and suffix not in ("a", "f"):
+        raise RuntimeError(f"Invalid CUDA architecture suffix {suffix!r} in module metadata {meta_path!s}.")
     return suffix
 
 
@@ -7999,6 +8377,40 @@ class Runtime:
                 ctypes.c_int,  # ldc
             ]
             self.core.wp_cuda_compile_dot.restype = ctypes.c_bool
+
+            self.core.wp_cuda_compile_gemm_pipeline.argtypes = [
+                ctypes.c_char_p,  # lto
+                ctypes.c_char_p,  # symbol prefix
+                ctypes.c_int,  # arch
+                ctypes.c_int,  # tile M
+                ctypes.c_int,  # tile N
+                ctypes.c_int,  # tile K
+                ctypes.c_int,  # full M
+                ctypes.c_int,  # full N
+                ctypes.c_int,  # full K
+                ctypes.c_int,  # a storage precision
+                ctypes.c_int,  # b storage precision
+                ctypes.c_int,  # c storage precision
+                ctypes.c_int,  # a compute precision
+                ctypes.c_int,  # b compute precision
+                ctypes.c_int,  # accumulator precision
+                ctypes.c_int,  # type
+                ctypes.c_int,  # a arrangement
+                ctypes.c_int,  # b arrangement
+                ctypes.c_int,  # c arrangement
+                ctypes.c_int,  # block dimension
+                ctypes.c_int,  # pipeline depth
+                ctypes.POINTER(ctypes.c_int),  # device-pipeline storage size
+                ctypes.POINTER(ctypes.c_int),  # device-pipeline storage alignment
+                ctypes.POINTER(ctypes.c_int),  # shared-memory buffer size
+                ctypes.POINTER(ctypes.c_int),  # shared-memory buffer alignment
+                ctypes.POINTER(ctypes.c_int),  # tile-pipeline storage size
+                ctypes.POINTER(ctypes.c_int),  # tile-pipeline storage alignment
+                ctypes.POINTER(ctypes.c_int),  # accumulator storage size
+                ctypes.POINTER(ctypes.c_int),  # accumulator storage alignment
+                ctypes.POINTER(ctypes.c_int),  # pipeline block dimension
+            ]
+            self.core.wp_cuda_compile_gemm_pipeline.restype = ctypes.c_bool
 
             self.core.wp_cuda_compile_solver.argtypes = [
                 ctypes.c_char_p,  # universal fatbin
@@ -10823,6 +11235,10 @@ class Launch:
                         # For primitive types in adjoint mode, initialize with 0
                         params.append(pack_arg(kernel, a.type, a.label, 0, device, True))
 
+            # Hidden tile_gemm pipeline arguments follow the public forward and
+            # adjoint arguments. They remain null until concrete arrays are set.
+            params.extend(ctypes.c_void_p() for _ in hooks.gemm_pipeline_meta)
+
             # Create array of parameter addresses
             params_addr = _build_cuda_kernel_params(params)
 
@@ -10861,6 +11277,32 @@ class Launch:
         # launch falls back to direct execution and is not APIC-recordable.
         self.fwd_args = fwd_args
         self.adj_args = adj_args
+
+        public_arg_count = len(kernel.adj.args) * (2 if adjoint else 1)
+        self._gemm_pipeline_param_offset = 1 + public_arg_count
+        self._forward_smem_bytes = hooks.forward_smem_bytes
+
+    def _refresh_gemm_pipeline_params(self, stream: Stream) -> None:
+        """Refresh launch-bound tile_gemm resources after array arguments change."""
+        if not self.hooks.gemm_pipeline_meta:
+            return
+
+        pipeline_params = (
+            self.module_exec.get_gemm_pipeline_params(
+                self.hooks.gemm_pipeline_meta,
+                self.fwd_args,
+                stream,
+                enabled=self.hooks.gemm_pipeline_enabled,
+            )
+            if self.fwd_args is not None
+            else []
+        )
+        if not self.adjoint:
+            self._forward_smem_bytes = self.hooks.select_forward_smem_bytes(pipeline_params)
+        for index, value in enumerate(pipeline_params, self._gemm_pipeline_param_offset):
+            self.params[index] = value
+            if self.params_addr:
+                self.params_addr[index] = ctypes.c_void_p(ctypes.addressof(value))
 
     def set_dim(self, dim: int | list[int] | tuple[int, ...]):
         """Set the launch dimensions.
@@ -11092,6 +11534,11 @@ class Launch:
             if stream is None:
                 stream = self.device.stream
 
+            if self.hooks.gemm_pipeline_meta:
+                if apic_capture is not None:
+                    raise RuntimeError("tile_gemm() pipelines are not supported by CUDA APIC capture yet.")
+                self._refresh_gemm_pipeline_params(stream)
+
             # If the stream is capturing, we retain the CUDA module so that it doesn't get unloaded
             # before the captured graph is released.
             if len(runtime.captures) > 0 and runtime.core.wp_cuda_stream_is_capturing(stream.cuda_stream):
@@ -11144,7 +11591,7 @@ class Launch:
                     self.block_dim,
                     int(self.grid_stride),
                     self.cluster_dim,
-                    self.hooks.forward_smem_bytes,
+                    self._forward_smem_bytes,
                     self.params_addr,
                     stream.cuda_stream,
                     apic_info_ptr,
@@ -11444,6 +11891,25 @@ def launch(
         pack_args(fwd_args, params, adjoint=False)
         pack_args(adj_args, params, adjoint=True)
 
+        gemm_pipeline_params = []
+        if hooks.gemm_pipeline_meta:
+            if not device.is_cuda:
+                raise RuntimeError("tile_gemm() pipeline metadata is only valid for CUDA kernels.")
+            if _get_apic_capture_for_device(device) is not None:
+                raise RuntimeError("tile_gemm() pipelines are not supported by CUDA APIC capture yet.")
+            if stream is None:
+                stream = device.stream
+            gemm_pipeline_params = module_exec.get_gemm_pipeline_params(
+                hooks.gemm_pipeline_meta,
+                fwd_args,
+                stream,
+                enabled=hooks.gemm_pipeline_enabled,
+            )
+            params.extend(gemm_pipeline_params)
+        forward_smem_bytes = (
+            hooks.select_forward_smem_bytes(gemm_pipeline_params) if not adjoint else hooks.forward_smem_bytes
+        )
+
         # Deterministic mode: redirect to the launcher that supplies the hidden
         # deterministic buffers. Backward kernels use the same path so generated
         # tape adjoints can reduce gradient atomics in a fixed order.
@@ -11688,7 +12154,7 @@ def launch(
                         block_dim,
                         int(kernel.grid_stride),
                         cluster_dim,
-                        hooks.forward_smem_bytes,
+                        forward_smem_bytes,
                         kernel_params,
                         stream.cuda_stream,
                         apic_info_ptr,
@@ -12393,43 +12859,6 @@ def _resolve_module(module: Module | types.ModuleType | str) -> Module:
     return module_object
 
 
-def _get_module_artifact_path(
-    module: Module,
-    device: Device | None,
-    output_arch: int | None,
-    module_dir: str | os.PathLike | None,
-    use_ptx: bool | None,
-) -> Path:
-    active_block_dim = module.options["block_dim"]
-
-    if output_arch is None:
-        output_arch = module._get_compile_arch(device)
-
-    if output_arch is None:
-        output_name = module._get_compile_output_name(device, None, use_ptx=use_ptx, block_dim=active_block_dim)
-    else:
-        arch_suffix = _validate_cuda_arch_suffix(
-            output_arch,
-            device_arch=device.arch if device is not None else output_arch,
-            toolkit_version=runtime.toolkit_version,
-            device_name=device.alias if device is not None else None,
-        )
-        output_name = module._get_compile_output_name(
-            device,
-            output_arch,
-            arch_suffix=arch_suffix,
-            use_ptx=use_ptx,
-            block_dim=active_block_dim,
-        )
-
-    if module_dir is None:
-        output_dir = Path(warp.config.kernel_cache_dir) / module.get_module_identifier(block_dim=active_block_dim)
-    else:
-        output_dir = Path(module_dir)
-
-    return output_dir / output_name
-
-
 def compile_aot_module(
     module: Module | types.ModuleType | str,
     device: Device | str | list[Device] | list[str] | None = None,
@@ -12559,18 +12988,23 @@ def compile_aot_module(
         devices = [get_device(device)]
 
     artifact_paths = []
+    artifact_dir = (
+        Path(warp.config.kernel_cache_dir) / module_object.get_module_identifier()
+        if module_dir is None
+        else Path(module_dir)
+    )
 
     for d in devices:
-        module_object._compile(d, module_dir, use_ptx=use_ptx)
-        artifact_paths.append(_get_module_artifact_path(module_object, d, None, module_dir, use_ptx))
+        _, output_name, _ = module_object._compile(d, module_dir, use_ptx=use_ptx)
+        artifact_paths.append(artifact_dir / output_name)
 
     if arch:
         if isinstance(arch, str) or not hasattr(arch, "__iter__"):
             arch = [arch]
 
         for arch_value in arch:
-            module_object._compile(None, module_dir, output_arch=arch_value, use_ptx=use_ptx)
-            artifact_paths.append(_get_module_artifact_path(module_object, None, arch_value, module_dir, use_ptx))
+            _, output_name, _ = module_object._compile(None, module_dir, output_arch=arch_value, use_ptx=use_ptx)
+            artifact_paths.append(artifact_dir / output_name)
 
     if is_cuda_available():
         # restore original context to avoid side effects
@@ -12642,25 +13076,47 @@ def load_aot_module(
         module_dir = os.fspath(module_dir)
 
     for d in devices:
+        meta_path = os.path.join(module_dir, module_object._get_meta_name())
+
         # Identify the files in the cache to load
         if arch is None:
             output_arch = module_object._get_compile_arch(d)
         else:
             output_arch = arch
 
-        meta_path = os.path.join(module_dir, module_object._get_meta_name())
-
         # Determine candidate binaries to try
         tried_paths = []
         binary_path = None
-        if d.is_cuda and use_ptx is None:
-            candidate_flags = (True, False)  # try PTX first, then CUBIN
+        required_arch_suffix = (
+            module_object._get_cached_cuda_arch_suffix(module_dir, d.arch if arch is None else output_arch)
+            if d.is_cuda
+            else None
+        )
+        if required_arch_suffix is not None:
+            if required_arch_suffix == "a" and arch is None:
+                output_arch = d.arch
+            arch_suffix = _validate_cuda_arch_suffix(
+                output_arch,
+                device_arch=d.arch,
+                toolkit_version=runtime.toolkit_version,
+                device_name=d.alias,
+                required_suffix=required_arch_suffix,
+            )
+            candidates = ((False, arch_suffix),)
+        elif d.is_cuda and use_ptx is None:
+            candidates = ((True, ""), (False, ""))  # try PTX first, then CUBIN
         else:
-            candidate_flags = (use_ptx,)
+            candidates = ((use_ptx, ""),)
 
-        for candidate_use_ptx in candidate_flags:
+        for candidate_use_ptx, candidate_arch_suffix in candidates:
             candidate_path = os.path.join(
-                module_dir, module_object._get_compile_output_name(d, output_arch, use_ptx=candidate_use_ptx)
+                module_dir,
+                module_object._get_compile_output_name(
+                    d,
+                    output_arch,
+                    arch_suffix=candidate_arch_suffix,
+                    use_ptx=candidate_use_ptx,
+                ),
             )
             tried_paths.append(candidate_path)
             if os.path.exists(candidate_path):
@@ -12669,6 +13125,14 @@ def load_aot_module(
 
         if binary_path is None:
             raise FileNotFoundError(f"Binary file not found. Tried: {', '.join(tried_paths)}")
+
+        if d.is_cuda:
+            binary_meta_path = os.path.join(
+                module_dir,
+                module_object._get_meta_name(output_name=os.path.basename(binary_path)),
+            )
+            if os.path.exists(binary_meta_path):
+                meta_path = binary_meta_path
 
         module_object.load(
             d,

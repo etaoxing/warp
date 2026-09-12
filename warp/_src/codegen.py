@@ -29,6 +29,7 @@ import numpy as np
 
 import warp.config
 from warp._src.deterministic import DeterministicCodegen
+from warp._src.gemm_pipeline import GemmPipelineCodegen
 from warp._src.logger import log_debug, log_warning
 from warp._src.types import *
 
@@ -1938,6 +1939,7 @@ class Adjoint:
         # helper metadata behind a small integration object so the core codegen
         # paths do not need to coordinate deterministic internals directly.
         adj.deterministic = DeterministicCodegen(adj)
+        adj.gemm_pipeline = GemmPipelineCodegen(adj)
 
         # Caches derived from the AST. Reset both if ``adj.tree`` is ever mutated
         # after either cache is populated.
@@ -1950,6 +1952,17 @@ class Adjoint:
     # quantity is the 'roofline' amount required for the entire kernel
     def alloc_shared_extra(adj, num_bytes):
         adj.max_required_extra_shared_memory = max(adj.max_required_extra_shared_memory, num_bytes)
+
+    # Track the roofline when every tile_gemm call takes its portable fallback.
+    # For kernels without tile_gemm this remains identical to the normal roofline.
+    def alloc_shared_extra_fallback(adj, num_bytes):
+        adj.max_required_extra_shared_memory_fallback = max(adj.max_required_extra_shared_memory_fallback, num_bytes)
+
+    # Track the roofline when every launch-bound tile_gemm pipeline is active.
+    def alloc_shared_extra_gemm_pipeline(adj, num_bytes):
+        adj.max_required_extra_shared_memory_gemm_pipeline = max(
+            adj.max_required_extra_shared_memory_gemm_pipeline, num_bytes
+        )
 
     # backward-pass counterpart of alloc_shared_extra()
     def alloc_shared_extra_backward(adj, num_bytes):
@@ -1971,6 +1984,12 @@ class Adjoint:
     # requirements of any dependent functions
     def get_total_required_shared(adj):
         return adj.get_own_required_shared() + adj.max_required_extra_shared_memory
+
+    def get_total_required_shared_fallback(adj):
+        return adj.get_own_required_shared() + adj.max_required_extra_shared_memory_fallback
+
+    def get_total_required_shared_gemm_pipeline(adj):
+        return adj.get_own_required_shared() + adj.max_required_extra_shared_memory_gemm_pipeline
 
     # backward counterpart of get_total_required_shared();
     # callee frames come from ModuleBuilder._propagate_backward_shared_memory
@@ -2132,6 +2151,7 @@ class Adjoint:
         options = adj.builder_options
 
         adj.deterministic.begin_build(adj.builder_options)
+        adj.gemm_pipeline.begin_build()
 
         adj.symbols = {}  # map from symbols to adjoint variables
         adj.variables = []  # list of local variables (in order)
@@ -2155,6 +2175,8 @@ class Adjoint:
 
         # tracks how much additional shared memory is required by any dependent function calls
         adj.max_required_extra_shared_memory = 0
+        adj.max_required_extra_shared_memory_fallback = 0
+        adj.max_required_extra_shared_memory_gemm_pipeline = 0
 
         # backward-pass counterpart, resolved by ModuleBuilder._propagate_backward_shared_memory
         adj.max_required_extra_shared_memory_backward = 0
@@ -2842,11 +2864,29 @@ class Adjoint:
         # for example by checking whether an argument corresponds to
         # a literal value or references a variable.
         extra_shared_memory = 0
+        fallback_extra_shared_memory = 0
+        gemm_pipeline_extra_shared_memory = 0
         func_arg_names = tuple(bound_args.keys())
         if func.lto_dispatch_func is not None:
-            func_args, template_args, _ltoirs, extra_shared_memory = func.lto_dispatch_func(
+            dispatch = func.lto_dispatch_func(
                 func.input_types, return_type, output_list, bound_args, options=adj.builder_options, builder=adj.builder
             )
+            if len(dispatch) == 4:
+                func_args, template_args, _ltoirs, extra_shared_memory = dispatch
+                fallback_extra_shared_memory = extra_shared_memory
+                gemm_pipeline_extra_shared_memory = extra_shared_memory
+            elif len(dispatch) == 5:
+                func_args, template_args, _ltoirs, extra_shared_memory, fallback_extra_shared_memory = dispatch
+                gemm_pipeline_extra_shared_memory = extra_shared_memory
+            else:
+                (
+                    func_args,
+                    template_args,
+                    _ltoirs,
+                    extra_shared_memory,
+                    fallback_extra_shared_memory,
+                    gemm_pipeline_extra_shared_memory,
+                ) = dispatch
         elif func.dispatch_func is not None:
             func_args, template_args = func.dispatch_func(func.input_types, return_type, bound_args)
         else:
@@ -2858,6 +2898,8 @@ class Adjoint:
             func_args = tuple(bound_args[name] for name in func_arg_names)
             # Function parameters are specialization inputs, not C++ arguments.
             template_args = ()
+
+        func_args = adj.gemm_pipeline.bind_builtin(func, func_args, bound_args)
 
         func_args = tuple(adj.register_var(x) for x in func_args)
         func_name = compute_type_str(func.native_func, template_args)
@@ -2916,26 +2958,28 @@ class Adjoint:
                 fwd_args.append(strip_reference(func_arg_var))
             reverse_adj_args.append(reverse_arg_var)
 
+        gemm_args = adj.gemm_pipeline.call_args(func, bound_args)
+        replay_gemm_args = adj.gemm_pipeline.replay_call_args(func, bound_args, gemm_args)
         det_args = adj.deterministic.call_args(func, bound_args)
         replay_det_args = adj.deterministic.replay_call_args(func, bound_args, det_args)
 
         if return_type is None:
             # handles expression (zero output) functions, e.g.: void do_something();
-            forward_call = f"{func.namespace}{func_name}({adj.format_forward_call_args(fwd_args + det_args, use_initializer_list)});"
+            forward_call = f"{func.namespace}{func_name}({adj.format_forward_call_args(fwd_args + gemm_args + det_args, use_initializer_list)});"
             replay_call = forward_call
             if func.custom_replay_func is not None or func.replay_snippet is not None:
-                replay_call = f"{func.namespace}replay_{func_name}({adj.format_forward_call_args(fwd_args + replay_det_args, use_initializer_list)});"
+                replay_call = f"{func.namespace}replay_{func_name}({adj.format_forward_call_args(fwd_args + replay_gemm_args + replay_det_args, use_initializer_list)});"
 
         elif not isinstance(return_type, Sequence) or len(return_type) == 1:
             # handle simple function (one output)
-            forward_call = f"var_{output} = {func.namespace}{func_name}({adj.format_forward_call_args(fwd_args + det_args, use_initializer_list)});"
+            forward_call = f"var_{output} = {func.namespace}{func_name}({adj.format_forward_call_args(fwd_args + gemm_args + det_args, use_initializer_list)});"
             replay_call = forward_call
             if func.custom_replay_func is not None:
-                replay_call = f"var_{output} = {func.namespace}replay_{func_name}({adj.format_forward_call_args(fwd_args + replay_det_args, use_initializer_list)});"
+                replay_call = f"var_{output} = {func.namespace}replay_{func_name}({adj.format_forward_call_args(fwd_args + replay_gemm_args + replay_det_args, use_initializer_list)});"
 
         else:
             # handle multiple value functions
-            forward_call = f"{func.namespace}{func_name}({adj.format_forward_call_args(fwd_args + det_args + output, use_initializer_list)});"
+            forward_call = f"{func.namespace}{func_name}({adj.format_forward_call_args(fwd_args + gemm_args + det_args + output, use_initializer_list)});"
             replay_call = forward_call
 
         forward_call, replay_call = adj.deterministic.wrap_unintercepted_side_effect_atomic(
@@ -2975,7 +3019,8 @@ class Adjoint:
             reverse_has_output_args = (
                 func.require_original_output_arg or len(output_list) > 1
             ) and func.custom_grad_func is None
-            reverse_extra_args = adj.deterministic.reverse_call_args(func, bound_args, det_args)
+            reverse_gemm_args = adj.gemm_pipeline.reverse_call_args(func, bound_args, gemm_args)
+            reverse_extra_args = reverse_gemm_args + adj.deterministic.reverse_call_args(func, bound_args, det_args)
             arg_str = adj.format_reverse_call_args(
                 fwd_args,
                 adj_args,
@@ -3001,8 +3046,16 @@ class Adjoint:
         # shared memory required by the dependent function call
         if not func.is_builtin():
             adj.alloc_shared_extra(func.adj.get_total_required_shared() + extra_shared_memory)
+            adj.alloc_shared_extra_fallback(
+                func.adj.get_total_required_shared_fallback() + fallback_extra_shared_memory
+            )
+            adj.alloc_shared_extra_gemm_pipeline(
+                func.adj.get_total_required_shared_gemm_pipeline() + gemm_pipeline_extra_shared_memory
+            )
         else:
             adj.alloc_shared_extra(extra_shared_memory)
+            adj.alloc_shared_extra_fallback(fallback_extra_shared_memory)
+            adj.alloc_shared_extra_gemm_pipeline(gemm_pipeline_extra_shared_memory)
         # user-function callee frames are folded in post-build by ModuleBuilder._propagate_backward_shared_memory
         # x2: the builtin's adjoint needs LTO workspace too; matches the previous blanket backward sizing
         adj.alloc_shared_extra_backward(extra_shared_memory * 2)
@@ -7552,6 +7605,9 @@ def codegen_func(
         forward_args.append(s)
         if not adj.custom_reverse_mode or i < adj.custom_reverse_num_input_args:
             reverse_args.append(s)
+    gemm_args = adj.gemm_pipeline.function_args()
+    forward_args.extend(gemm_args)
+    reverse_args.extend(gemm_args)
     det_args = adj.deterministic.function_args()
     forward_args.extend(det_args)
     reverse_args.extend(det_args)
@@ -7824,6 +7880,11 @@ def codegen_kernel(kernel, device, options):
             "deterministic lowering."
         )
 
+    if is_external_constant_params_entry and adj.gemm_pipeline_requirements:
+        raise WarpCodegenError(
+            f"Kernel '{kernel.key}' with entry_point_abi='external_constant_params' does not support tile_gemm pipelines."
+        )
+
     if is_external_constant_params_entry and _uses_tid_call(adj):
         raise WarpCodegenError(
             f"Kernel '{kernel.key}' with entry_point_abi='external_constant_params' cannot use wp.tid(); "
@@ -7919,6 +7980,7 @@ def codegen_kernel(kernel, device, options):
         )
 
     if not is_external_constant_params_entry and device != "cpu":
+        forward_args.extend(adj.gemm_pipeline.kernel_args())
         forward_args.extend(adj.deterministic.kernel_args())
 
     forward_func_type = "function" if is_external_constant_params_entry else "kernel"
@@ -7958,6 +8020,7 @@ def codegen_kernel(kernel, device, options):
                     reverse_args.append(_arg.ctype() + " adj_" + arg.label)
                 else:
                     reverse_args.append(arg.ctype() + " adj_" + arg.label)
+            reverse_args.extend(adj.gemm_pipeline.kernel_args())
             reverse_args.extend(adj.deterministic.kernel_args())
 
         reverse_body = ""

@@ -268,6 +268,8 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
     from warp.tests.tile.test_tile_fft_no_mathdx import TestTileFFTNoMathDx
     from warp.tests.tile.test_tile_func_arg import TestTileFuncArg
     from warp.tests.tile.test_tile_fused_ops import TestTileFusedOps
+    from warp.tests.tile.test_tile_gemm_builtin import TestTileGemm
+    from warp.tests.tile.test_tile_gemm_integration import TestTileGemmIntegration
     from warp.tests.tile.test_tile_large_offsets import TestTileLargeOffsets
     from warp.tests.tile.test_tile_load import TestTileLoad
     from warp.tests.tile.test_tile_load_assign import TestTileLoadAssign
@@ -447,6 +449,8 @@ def default_suite(test_loader: unittest.TestLoader = unittest.defaultTestLoader)
         TestTileFFTNoMathDx,
         TestTileFuncArg,
         TestTileFusedOps,
+        TestTileGemm,
+        TestTileGemmIntegration,
         TestTileLargeOffsets,
         TestTileLoad,
         TestTileLoadAssign,

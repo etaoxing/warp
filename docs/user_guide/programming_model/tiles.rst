@@ -344,7 +344,7 @@ Example: General Matrix Multiply (GEMM)
     TILE_THREADS = 64
 
     @wp.kernel
-    def tile_gemm(A: wp.array2d[float], B: wp.array2d[float], C: wp.array2d[float]):
+    def tile_matmul_kernel(A: wp.array2d[float], B: wp.array2d[float], C: wp.array2d[float]):
         
         # output tile index
         i, j = wp.tid()
@@ -386,7 +386,7 @@ Example: General Matrix Multiply (GEMM)
 
         with wp.Tape() as tape:
             wp.launch_tiled(
-                tile_gemm,
+                tile_matmul_kernel,
                 dim=(int(M / TILE_M), int(N / TILE_N)),
                 inputs=[A_wp, B_wp, C_wp],
                 block_dim=TILE_THREADS)
@@ -394,6 +394,87 @@ Example: General Matrix Multiply (GEMM)
         np.testing.assert_allclose(C_wp.numpy(), A @ B, rtol=1e-3)
 
         print("Example matrix multiplication passed")
+
+
+Pipelined GEMM from global arrays
+---------------------------------
+
+:func:`tile_gemm <warp._src.lang.tile_gemm>` performs the complete reduction over
+``K`` and returns one ordinary Warp tile. Unlike a host BLAS call, it remains part of
+the calling kernel, so the result can flow directly into later tile operations:
+
+.. code:: python
+
+    M, N, K = 2048, 1024, 1024
+    TM, TN, TK = 64, 64, 32
+
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
+    def gemm_relu(A: wp.array2d[float], B: wp.array2d[float], C: wp.array2d[float]):
+        i, j = wp.tid()
+        output = wp.tile_gemm(
+            A,
+            B,
+            i,
+            j,
+            tile=(TM, TN, TK),
+            shape=(M, N, K),
+        )
+        output = wp.tile_map(wp.max, output, 0.0)
+        wp.tile_store(C, output, offset=(i * TM, j * TN))
+
+``tile`` and ``shape`` must be compile-time constants. Set ``transpose_a=True``
+or ``transpose_b=True`` to interpret a dense row-major input as its logical
+transpose without materializing another array. The return-value overload defaults
+to float32 accumulation when ``A`` is float16 or bfloat16 and otherwise uses its
+datatype; pass ``dtype=`` to override it. The output-tile overload uses
+the tile's datatype and accepts ``beta=0.0`` when its previous contents are not
+needed.
+
+Partial tiles zero-pad the matrix product in all three dimensions. The returning
+overload produces a complete ``(TM, TN)`` tile with zero product values beyond
+``M`` or ``N``. The output-tile overload also applies ``beta`` to every element of
+``out``, including those outside the logical matrix. Output views preserve their
+strides and currently use the portable implementation.
+
+The output datatype must be float16, float32, or float64. Bfloat16 inputs require
+the module option ``enable_backward=False``; disabling only the kernel's backward
+pass does not disable the builtin's backward dispatch.
+
+In a forward-only module, the returning overload may reuse its newly created
+output storage as temporary pipeline workspace. An output tile passed explicitly
+is never reused this way because other live shared tiles can follow it in the
+kernel's allocation. Set the module-level option ``enable_backward=False`` to
+enable this optimization; a kernel-level option alone does not affect LTO
+dispatch.
+
+On SM100 and newer GPUs, CUDA 13.1 or newer and MathDx 0.4 enable a linked
+cuBLASDx device pipeline for aligned, evenly tiled dense matrices. Other cases
+use a portable cooperative implementation. Warp automatically emits an
+architecture-specific CUBIN for a module that links the accelerated pipeline.
+If the generated pipeline exceeds the GPU's dynamic shared-memory budget, Warp
+selects the portable implementation before launch.
+The pipeline is initialized and cached for each input-pointer pair on its first
+launch. Launch once before CUDA graph capture; graph replays then execute only
+the calling kernel.
+
+The last dimension of a two-dimensional launch changes fastest, so the example
+above visits neighboring ``j`` tiles first. This order normally provides useful
+panel reuse for TN and TT products. For a large NN product, the alternative
+``j, i = wp.tid()`` with ``dim=(tiles_n, tiles_m)`` makes ``i`` change fastest
+and can improve reuse of strided right-hand panels. The benefit depends on the
+matrix shape and GPU, so keep the ordinary two-dimensional launch unless the
+target workload benefits from the reversed order.
+
+Automatic differentiation uses a portable scalar ``K`` loop for this operation
+and atomically accumulates partial products into the input-array gradients. The
+accelerated device pipeline is currently forward-only. Gradients with respect to
+``alpha`` and ``beta`` are not supported. When the upstream gradient is already
+a global two-dimensional array, a performance-sensitive
+operator can provide a custom gradient that computes
+``adj_a = alpha * (adj_output @ b.T)`` and ``adj_b = alpha * (a.T @ adj_output)`` with two
+``tile_gemm`` operations and the corresponding transpose flags. This keeps both
+complete reductions eligible for the device pipeline; the generic tile-level
+adjoint cannot do so because its upstream gradient is a shared-memory tile.
 
 
 Tile Operations
@@ -682,6 +763,7 @@ Linear Algebra
 ^^^^^^^^^^^^^^
 
 * :func:`tile_matmul <warp._src.lang.tile_matmul>`
+* :func:`tile_gemm <warp._src.lang.tile_gemm>`
 * :func:`tile_transpose <warp._src.lang.tile_transpose>`
 * :func:`tile_fft <warp._src.lang.tile_fft>`
 * :func:`tile_ifft <warp._src.lang.tile_ifft>`

@@ -198,6 +198,7 @@ Tile Primitives
    tile_fft
    tile_from_thread
    tile_full
+   tile_gemm
    tile_ifft
    tile_load
    tile_load_indexed

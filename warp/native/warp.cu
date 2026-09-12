@@ -5168,6 +5168,321 @@ bool wp_cuda_compile_dot(
     return res;
 }
 
+bool wp_cuda_compile_gemm_pipeline(
+    const char* ltoir_output_path,
+    const char* symbol_prefix,
+    int arch,
+    int tile_m,
+    int tile_n,
+    int tile_k,
+    int full_m,
+    int full_n,
+    int full_k,
+    int storage_precision_a,
+    int storage_precision_b,
+    int storage_precision_c,
+    int compute_precision_a,
+    int compute_precision_b,
+    int accumulator_precision,
+    int type,
+    int arrangement_a,
+    int arrangement_b,
+    int arrangement_c,
+    int num_threads,
+    int pipeline_depth,
+    int* device_pipeline_storage_size,
+    int* device_pipeline_storage_alignment,
+    int* shared_memory_buffer_size,
+    int* shared_memory_buffer_alignment,
+    int* tile_pipeline_storage_size,
+    int* tile_pipeline_storage_alignment,
+    int* accumulator_storage_size,
+    int* accumulator_storage_alignment,
+    int* pipeline_block_dim
+)
+{
+#if LIBMATHDX_VER_MAJOR == 0 && LIBMATHDX_VER_MINOR < 4
+    fprintf(stderr, "Warp error: tile_gemm() pipelines require libmathdx 0.4.0 or newer\n");
+    return false;
+#else
+    CHECK_ANY(ltoir_output_path != nullptr);
+    CHECK_ANY(symbol_prefix != nullptr);
+    CHECK_ANY(full_m > 0);
+    CHECK_ANY(full_n > 0);
+    CHECK_ANY(full_k > 0);
+    CHECK_ANY(device_pipeline_storage_size != nullptr);
+    CHECK_ANY(device_pipeline_storage_alignment != nullptr);
+    CHECK_ANY(shared_memory_buffer_size != nullptr);
+    CHECK_ANY(shared_memory_buffer_alignment != nullptr);
+    CHECK_ANY(tile_pipeline_storage_size != nullptr);
+    CHECK_ANY(tile_pipeline_storage_alignment != nullptr);
+    CHECK_ANY(accumulator_storage_size != nullptr);
+    CHECK_ANY(accumulator_storage_alignment != nullptr);
+    CHECK_ANY(pipeline_block_dim != nullptr);
+
+    struct PipelineResources {
+        cublasdxDescriptor descriptor {};
+        std::array<cublasdxTensor, 4> tensors {};
+        std::array<cublasdxPipeline, 2> pipelines {};
+        std::array<cublasdxDeviceFunction, 9> functions {};
+        commondxCode code {};
+
+        PipelineResources() = default;
+        PipelineResources(const PipelineResources&) = delete;
+        PipelineResources& operator=(const PipelineResources&) = delete;
+
+        bool cleanup()
+        {
+            bool ok = true;
+            auto destroy = [&](auto& handle, auto destroy_function) {
+                if (handle) {
+                    ok = check_cublasdx(destroy_function(handle)) && ok;
+                    handle = {};
+                }
+            };
+            // Functions precede code; pipelines and tensors unwind in reverse creation order.
+            for (auto& function : functions)
+                destroy(function, cublasdxDestroyDeviceFunction);
+            destroy(code, commondxDestroyCode);
+            for (auto it = pipelines.rbegin(); it != pipelines.rend(); ++it)
+                destroy(*it, cublasdxDestroyPipeline);
+            for (auto it = tensors.rbegin(); it != tensors.rend(); ++it)
+                destroy(*it, cublasdxDestroyTensor);
+            destroy(descriptor, cublasdxDestroyDescriptor);
+            return ok;
+        }
+
+        ~PipelineResources() { cleanup(); }
+    } resources;
+
+    bool res = true;
+    auto& descriptor = resources.descriptor;
+    CHECK_CUBLASDX(cublasdxCreateDescriptor(&descriptor));
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_FUNCTION, cublasdxFunction::CUBLASDX_FUNCTION_MM
+    ));
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_EXECUTION, commondxExecution::COMMONDX_EXECUTION_BLOCK
+    ));
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_API, cublasdxApi::CUBLASDX_API_TENSORS
+    ));
+
+    std::array<long long int, 3> precisions = { compute_precision_a, compute_precision_b, accumulator_precision };
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64s(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_PRECISION, precisions.size(), precisions.data()
+    ));
+    // MathDx only exposes architecture-specific GEMM descriptors for a subset
+    // of targets. The generated device code may still target an accelerated
+    // architecture even when the descriptor itself uses the generic form.
+    const bool has_arch_specific_descriptor = arch == 90 || arch == 100 || arch == 101 || arch == 103 || arch == 110;
+    std::array<long long int, 2> descriptor_sm = {
+        arch * 10,
+        has_arch_specific_descriptor ? COMMONDX_ARCH_MODIFIER_ARCH_SPECIFIC : COMMONDX_ARCH_MODIFIER_GENERIC,
+    };
+    const bool has_arch_accelerated_target = arch >= 90;
+    std::array<long long int, 2> target_sm = {
+        arch * 10,
+        has_arch_accelerated_target ? COMMONDX_ARCH_MODIFIER_ARCH_SPECIFIC : COMMONDX_ARCH_MODIFIER_GENERIC,
+    };
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64s(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_SM, descriptor_sm.size(), descriptor_sm.data()
+    ));
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_TYPE, static_cast<cublasdxType>(type)
+    ));
+    std::array<long long int, 3> block_dim = { num_threads, 1, 1 };
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64s(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_BLOCK_DIM, block_dim.size(), block_dim.data()
+    ));
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64(descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_STATIC_BLOCK_DIM, 1));
+    std::array<long long int, 3> size = { tile_m, tile_n, tile_k };
+    CHECK_CUBLASDX(
+        cublasdxSetOperatorInt64s(descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_SIZE, size.size(), size.data())
+    );
+    std::array<long long int, 3> arrangement = { arrangement_a, arrangement_b, arrangement_c };
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64s(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_ARRANGEMENT, arrangement.size(), arrangement.data()
+    ));
+    std::array<long long int, 3> alignment = { 16, 16, 16 };
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64s(
+        descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_ALIGNMENT, alignment.size(), alignment.data()
+    ));
+    CHECK_CUBLASDX(
+        cublasdxSetOperatorInt64(descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_ENABLE_INPUT_STREAMING, 1)
+    );
+    CHECK_CUBLASDX(cublasdxSetOperatorInt64(descriptor, cublasdxOperatorType::CUBLASDX_OPERATOR_WITH_PIPELINE, 1));
+    CHECK_CUBLASDX(cublasdxSetOptionStr(descriptor, commondxOption::COMMONDX_OPTION_SYMBOL_NAME, symbol_prefix));
+
+    std::array<long long int, 2> a_shape = { full_m, full_k };
+    std::array<long long int, 2> b_shape = { full_k, full_n };
+    std::array<long long int, 2> a_stride = arrangement_a == CUBLASDX_ARRANGEMENT_ROW_MAJOR
+        ? std::array<long long int, 2> { full_k, 1 }
+        : std::array<long long int, 2> { 1, full_m };
+    std::array<long long int, 2> b_stride = arrangement_b == CUBLASDX_ARRANGEMENT_ROW_MAJOR
+        ? std::array<long long int, 2> { full_n, 1 }
+        : std::array<long long int, 2> { 1, full_k };
+
+    auto value_type = [](int precision) {
+        switch (precision) {
+        case COMMONDX_PRECISION_F16:
+            return COMMONDX_R_16F;
+        case COMMONDX_PRECISION_BF16:
+            return COMMONDX_R_16BF;
+        case COMMONDX_PRECISION_F32:
+            return COMMONDX_R_32F;
+        case COMMONDX_PRECISION_F64:
+            return COMMONDX_R_64F;
+        default:
+            return COMMONDX_R_32F;
+        }
+    };
+
+    auto& global_a = resources.tensors[0];
+    auto& global_b = resources.tensors[1];
+    CHECK_CUBLASDX(cublasdxCreateTensorStrided(
+        CUBLASDX_MEMORY_SPACE_GMEM, value_type(storage_precision_a), nullptr, a_shape.size(), a_shape.data(),
+        a_stride.data(), &global_a
+    ));
+    CHECK_CUBLASDX(cublasdxCreateTensorStrided(
+        CUBLASDX_MEMORY_SPACE_GMEM, value_type(storage_precision_b), nullptr, b_shape.size(), b_shape.data(),
+        b_stride.data(), &global_b
+    ));
+
+    auto& accumulator = resources.tensors[2];
+    CHECK_CUBLASDX(cublasdxCreateTensor(descriptor, CUBLASDX_TENSOR_SUGGESTED_ACCUMULATOR_C, &accumulator));
+
+    std::array<long long int, 2> output_shape = { tile_m, tile_n };
+    std::array<long long int, 2> output_stride = { tile_n, 1 };
+    auto& shared_c = resources.tensors[3];
+    CHECK_CUBLASDX(cublasdxCreateTensorStrided(
+        CUBLASDX_MEMORY_SPACE_SMEM, value_type(storage_precision_c), nullptr, output_shape.size(), output_shape.data(),
+        output_stride.data(), &shared_c
+    ));
+
+    auto& device_pipeline = resources.pipelines[0];
+    auto& tile_pipeline = resources.pipelines[1];
+    CHECK_CUBLASDX(cublasdxCreateDevicePipeline(
+        descriptor, CUBLASDX_DEVICE_PIPELINE_SUGGESTED, pipeline_depth, CUBLASDX_BLOCK_SIZE_STRATEGY_FIXED, global_a,
+        global_b, &device_pipeline
+    ));
+    CHECK_CUBLASDX(
+        cublasdxCreateTilePipeline(descriptor, CUBLASDX_TILE_PIPELINE_DEFAULT, device_pipeline, &tile_pipeline)
+    );
+
+    std::array<cublasdxTensor, 4> tensors = { global_a, global_b, shared_c, accumulator };
+    std::array<cublasdxPipeline, 2> pipelines = { device_pipeline, tile_pipeline };
+    CHECK_CUBLASDX(cublasdxFinalize(tensors.size(), tensors.data(), pipelines.size(), pipelines.data()));
+
+    auto get_tensor_trait = [](cublasdxTensor tensor, auto trait, int* output) {
+        long long int value = 0;
+        commondxStatusType status = cublasdxGetTensorTraitInt64(tensor, trait, &value);
+        *output = static_cast<int>(value);
+        return status;
+    };
+    auto get_pipeline_trait = [](cublasdxPipeline pipeline, auto trait, int* output) {
+        long long int value = 0;
+        commondxStatusType status = cublasdxGetPipelineTraitInt64(pipeline, trait, &value);
+        *output = static_cast<int>(value);
+        return status;
+    };
+
+    CHECK_CUBLASDX(get_tensor_trait(accumulator, CUBLASDX_TENSOR_TRAIT_STORAGE_BYTES, accumulator_storage_size));
+    CHECK_CUBLASDX(get_tensor_trait(accumulator, CUBLASDX_TENSOR_TRAIT_ALIGNMENT_BYTES, accumulator_storage_alignment));
+    CHECK_CUBLASDX(
+        get_pipeline_trait(device_pipeline, CUBLASDX_PIPELINE_TRAIT_STORAGE_BYTES, device_pipeline_storage_size)
+    );
+    CHECK_CUBLASDX(get_pipeline_trait(
+        device_pipeline, CUBLASDX_PIPELINE_TRAIT_STORAGE_ALIGNMENT_BYTES, device_pipeline_storage_alignment
+    ));
+    CHECK_CUBLASDX(get_pipeline_trait(device_pipeline, CUBLASDX_PIPELINE_TRAIT_BUFFER_SIZE, shared_memory_buffer_size));
+    CHECK_CUBLASDX(get_pipeline_trait(
+        device_pipeline, CUBLASDX_PIPELINE_TRAIT_BUFFER_ALIGNMENT_BYTES, shared_memory_buffer_alignment
+    ));
+    CHECK_CUBLASDX(
+        get_pipeline_trait(tile_pipeline, CUBLASDX_PIPELINE_TRAIT_STORAGE_BYTES, tile_pipeline_storage_size)
+    );
+    CHECK_CUBLASDX(get_pipeline_trait(
+        tile_pipeline, CUBLASDX_PIPELINE_TRAIT_STORAGE_ALIGNMENT_BYTES, tile_pipeline_storage_alignment
+    ));
+    std::array<long long int, 3> pipeline_dims = { 0, 0, 0 };
+    CHECK_CUBLASDX(cublasdxGetPipelineTraitInt64s(
+        device_pipeline, CUBLASDX_PIPELINE_TRAIT_BLOCK_DIM, pipeline_dims.size(), pipeline_dims.data()
+    ));
+    *pipeline_block_dim = static_cast<int>(pipeline_dims[0]);
+
+    auto& create_device_pipeline = resources.functions[0];
+    auto& create_tile_pipeline = resources.functions[1];
+    auto& create_accumulator = resources.functions[2];
+    auto& finish_accumulation = resources.functions[3];
+    auto& execute_pipeline = resources.functions[4];
+    auto& copy_accumulator = resources.functions[5];
+    auto& destroy_accumulator = resources.functions[6];
+    auto& destroy_tile_pipeline = resources.functions[7];
+    auto& destroy_device_pipeline = resources.functions[8];
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunctionWithPipelines(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_CREATE, 0, nullptr, 1, &device_pipeline, &create_device_pipeline
+    ));
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunctionWithPipelines(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_CREATE, 0, nullptr, 1, &tile_pipeline, &create_tile_pipeline
+    ));
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunctionWithPipelines(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_CREATE, 1, &accumulator, 1, &tile_pipeline, &create_accumulator
+    ));
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunction(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_FINISH_ACCUMULATION, 1, &accumulator, &finish_accumulation
+    ));
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunctionWithPipelines(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_EXECUTE, 1, &accumulator, 1, &tile_pipeline, &execute_pipeline
+    ));
+    std::array<cublasdxTensor, 2> copy_tensors = { accumulator, shared_c };
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunction(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_COPY, copy_tensors.size(), copy_tensors.data(), &copy_accumulator
+    ));
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunction(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_DESTROY, 1, &accumulator, &destroy_accumulator
+    ));
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunctionWithPipelines(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_DESTROY, 0, nullptr, 1, &tile_pipeline, &destroy_tile_pipeline
+    ));
+    CHECK_CUBLASDX(cublasdxCreateDeviceFunctionWithPipelines(
+        descriptor, CUBLASDX_DEVICE_FUNCTION_DESTROY, 0, nullptr, 1, &device_pipeline, &destroy_device_pipeline
+    ));
+
+    auto& functions = resources.functions;
+    std::array<const char*, 9> suffixes = {
+        "create_device", "create_tile",         "create_accumulator", "finish_accumulation", "execute",
+        "copy",          "destroy_accumulator", "destroy_tile",       "destroy_device",
+    };
+    std::vector<std::string> symbols;
+    symbols.reserve(functions.size());
+    for (size_t index = 0; index < functions.size(); ++index) {
+        symbols.emplace_back(std::string(symbol_prefix) + "_" + suffixes[index]);
+        CHECK_CUBLASDX(cublasdxSetDeviceFunctionOptionStr(
+            functions[index], CUBLASDX_DEVICE_FUNCTION_OPTION_SYMBOL_NAME, symbols.back().c_str()
+        ));
+    }
+
+    auto& code = resources.code;
+    CHECK_CUBLASDX(commondxCreateCode(&code));
+    CHECK_CUBLASDX(
+        commondxSetCodeOptionInt64s(code, commondxOption::COMMONDX_OPTION_TARGET_SM, target_sm.size(), target_sm.data())
+    );
+    CHECK_CUBLASDX(commondxSetCodeOptionStr(code, commondxOption::COMMONDX_OPTION_EXTRA_NVRTC_ARGS, "-gen-opt-lto"));
+    CHECK_CUBLASDX(cublasdxFinalizeDeviceFunctions(code, functions.size(), functions.data()));
+
+    size_t lto_size = 0;
+    CHECK_CUBLASDX(commondxGetCodeLTOIRSize(code, &lto_size));
+    std::vector<char> lto(lto_size);
+    CHECK_CUBLASDX(commondxGetCodeLTOIR(code, lto.size(), lto.data()));
+    if (!write_file(lto.data(), lto.size(), ltoir_output_path, "wb")) {
+        res = false;
+    }
+
+    return resources.cleanup() && res;
+#endif
+}
+
 bool wp_cuda_compile_solver(
     const char* fatbin_output_path,
     const char* ltoir_output_path,

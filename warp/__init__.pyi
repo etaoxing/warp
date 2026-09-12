@@ -9940,6 +9940,103 @@ def tile_matmul(
         beta: Accumulator factor"""
     ...
 
+@over
+def tile_gemm(
+    a: Array[Float],
+    b: Array[Float],
+    i: int32 | int,
+    j: int32 | int,
+    out: Tile[Float, tuple[int, int]],
+    tile: tuple[int, int, int],
+    shape: tuple[int, int, int],
+    transpose_a: bool | _builtins.bool = False,
+    transpose_b: bool | _builtins.bool = False,
+    alpha: Float | float = 1.0,
+    beta: Float | float = 1.0,
+) -> None:
+    """Compute one output tile of a matrix product over global arrays.
+
+    This form computes ``out = alpha * a_rows * b_columns + beta * out`` over
+    the complete shared reduction dimension. See the return-value overload for
+    the global-array and tile-coordinate contract.
+
+    Output views preserve their strides and use the portable implementation.
+    Gradients with respect to ``alpha`` and ``beta`` are not supported.
+
+    Args:
+        a: Dense two-dimensional left-hand array, logically shaped ``(M, K)``.
+        b: Dense two-dimensional right-hand array, logically shaped ``(K, N)``.
+        i: Row index of the output tile.
+        j: Column index of the output tile.
+        out: Shared-memory accumulator tile with shape ``(TM, TN)``. Its
+            datatype may differ from the input datatypes.
+        tile: Compile-time ``(TM, TN, TK)`` tile dimensions.
+        shape: Compile-time complete matrix dimensions ``(M, N, K)``.
+        transpose_a: Whether to transpose ``a`` logically before multiplication.
+        transpose_b: Whether to transpose ``b`` logically before multiplication.
+        alpha: Product scaling factor.
+        beta: Accumulator scaling factor."""
+    ...
+
+@over
+def tile_gemm(
+    a: Array[Float],
+    b: Array[Float],
+    i: int32 | int,
+    j: int32 | int,
+    tile: tuple[int, int, int],
+    shape: tuple[int, int, int],
+    transpose_a: bool | _builtins.bool = False,
+    transpose_b: bool | _builtins.bool = False,
+    alpha: Float | float = 1.0,
+    dtype: Any = ...,
+) -> Tile[Float, tuple[int, int]]:
+    """Compute one output tile of a matrix product over global arrays.
+
+    The operation computes all of the shared reduction dimension, unlike
+    :func:`tile_matmul`, which multiplies one pair of input tiles. For
+    ``tile=(TM, TN, TK)``, the result is equivalent to::
+
+        result = alpha * (a[i * TM : (i + 1) * TM, :] @ b[:, j * TN : (j + 1) * TN])
+
+    Boundary tiles are zero-padded while loading. The returned tile can be
+    consumed by other tile operations or written with :func:`tile_store`.
+    The complete ``(TM, TN)`` tile is returned, including zero product values
+    beyond ``M`` or ``N``. The output-tile overload applies ``beta`` to every
+    element of ``out``, including those outside the logical matrix.
+    In a two-dimensional launch, :func:`tid` makes ``j`` the fastest-changing
+    tile coordinate. This usually gives the desired panel reuse for TN and TT.
+    For NN, large grids may benefit from launching ``(tiles_n, tiles_m)`` and
+    unpacking ``j, i = tid()`` so that ``i`` changes fastest; the best order is
+    device- and shape-dependent.
+
+    The generic adjoint uses portable scalar tile products and atomically
+    accumulates into the input-array gradients; it does not use the forward
+    device pipeline. Performance-critical code with a global two-dimensional
+    output gradient can instead provide a custom gradient that computes
+    ``adj_a = alpha * (adj_output @ b.T)`` and ``adj_b = alpha * (a.T @ adj_output)`` with two
+    appropriately transposed :func:`tile_gemm` operations.
+    Gradients with respect to ``alpha`` are not supported. Bfloat16 inputs
+    require the module option ``enable_backward=False``.
+
+    Args:
+        a: Dense two-dimensional left-hand array, logically shaped ``(M, K)``.
+        b: Dense two-dimensional right-hand array, logically shaped ``(K, N)``.
+        i: Row index of the output tile.
+        j: Column index of the output tile.
+        tile: Compile-time ``(TM, TN, TK)`` tile dimensions.
+        shape: Compile-time complete matrix dimensions ``(M, N, K)``.
+        transpose_a: Whether to transpose ``a`` logically before multiplication.
+        transpose_b: Whether to transpose ``b`` logically before multiplication.
+        alpha: Product scaling factor.
+        dtype: Accumulator and output datatype: float16, float32, or float64.
+            Uses float32 when ``a`` is float16 or bfloat16; otherwise uses
+            the datatype of ``a``.
+
+    Returns:
+        A shared-memory tile with shape ``(TM, TN)`` and the selected output datatype."""
+    ...
+
 def tile_fft(inout: Tile[Vector[Float, Literal[2]], tuple[int, ...]]) -> None:
     """Compute the forward FFT along the last dimension of an N-D tile of data.
 

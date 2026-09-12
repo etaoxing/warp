@@ -1952,6 +1952,7 @@ def _deterministic_launch_class():
             if stream is None:
                 stream = self.device.stream
 
+            self._refresh_gemm_pipeline_params(stream)
             launch_deterministic(
                 self.kernel,
                 self.hooks,
@@ -2019,7 +2020,9 @@ def launch_deterministic(
         )
 
     launch_hook = hooks.backward if adjoint else hooks.forward
-    shared_memory_bytes = hooks.backward_smem_bytes if adjoint else hooks.forward_smem_bytes
+    pipeline_offset = 1 + len(kernel.adj.args) * (2 if adjoint else 1)
+    pipeline_params = user_params[pipeline_offset : pipeline_offset + len(hooks.gemm_pipeline_meta)]
+    shared_memory_bytes = hooks.backward_smem_bytes if adjoint else hooks.select_forward_smem_bytes(pipeline_params)
 
     if launch_hook is None:
         raise RuntimeError(

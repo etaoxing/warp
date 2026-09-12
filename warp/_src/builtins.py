@@ -17035,6 +17035,392 @@ add_builtin(
 )
 
 
+##
+## GEMM over global arrays
+##
+
+_tile_gemm_dtypes = (float16, bfloat16, float32, float64)
+_tile_gemm_accumulator_dtypes = (float16, float32, float64)
+_TILE_GEMM_PIPELINE_DEPTH = 2
+_TILE_GEMM_PIPELINE_FUNCTION_NAMES = warp._src.build._GEMM_PIPELINE_TILE_FUNCTION_SUFFIXES
+
+
+def _tile_gemm_pipeline_functions_arg(symbols=None):
+    arguments = ("0",) * len(_TILE_GEMM_PIPELINE_FUNCTION_NAMES)
+    if symbols is not None:
+        arguments = tuple(symbols[name] for name in _TILE_GEMM_PIPELINE_FUNCTION_NAMES)
+    expression = f"wp::make_tile_gemm_pipeline_functions({', '.join(arguments)})"
+    return Var(expression, str, False, True, False)
+
+
+def _tile_gemm_template_args(
+    tile_shape,
+    matrix_shape,
+    transpose_a,
+    transpose_b,
+    accumulate,
+    reuse_output,
+    pipeline=None,
+):
+    resources = (0,) * 6
+    if pipeline is not None:
+        resources = (
+            pipeline["shared_memory_buffer_size"],
+            pipeline["shared_memory_buffer_alignment"],
+            pipeline["tile_pipeline_storage_size"],
+            pipeline["tile_pipeline_storage_alignment"],
+            pipeline["accumulator_storage_size"],
+            pipeline["accumulator_storage_alignment"],
+        )
+    return (*tile_shape, *matrix_shape, transpose_a, transpose_b, accumulate, reuse_output, *resources)
+
+
+def _tile_gemm_staging_memory(tile_shape, a_dtype, b_dtype):
+    tile_m, tile_n, tile_k = tile_shape
+    return tile.round_up(tile_m * tile_k * type_size_in_bytes(a_dtype)) + tile.round_up(
+        tile_k * tile_n * type_size_in_bytes(b_dtype)
+    )
+
+
+def _tile_gemm_pipeline_supported(tile_shape, matrix_shape, a_dtype, b_dtype, options):
+    tile_m, tile_n, tile_k = tile_shape
+    full_m, full_n, full_k = matrix_shape
+    arch = options.get("device_arch") or options["output_arch"]
+    toolkit_version = warp._src.context.runtime.toolkit_version
+    return (
+        min(tile_m, tile_n) >= 16
+        # MathDx requires a 16-byte K slice, not a minimum of 16 elements.
+        and tile_k * min(type_size_in_bytes(a_dtype), type_size_in_bytes(b_dtype)) >= 16
+        # Current MathDx pipelines require full tiles; the public API and
+        # portable path also support partial tiles in M, N, and K.
+        and full_m % tile_m == 0
+        and full_n % tile_n == 0
+        and full_k % tile_k == 0
+        and (full_k + tile_k - 1) // tile_k >= _TILE_GEMM_PIPELINE_DEPTH
+        and arch is not None
+        and arch >= 100
+        and toolkit_version is not None
+        and toolkit_version >= (13, 1)
+        and warp._src.context.runtime.core.wp_is_mathdx_enabled()
+        and options.get("enable_mathdx_gemm", True)
+    )
+
+
+def _validate_tile_gemm_types(arg_types, arg_values):
+    # Return a generic type for documentation builds.
+    if arg_types is None:
+        return None
+
+    a = arg_types["a"]
+    b = arg_types["b"]
+
+    if not is_array(a) or a.ndim != 2:
+        raise TypeError(f"tile_gemm() 'a' argument must be a two-dimensional array, got {a!r}")
+    if not is_array(b) or b.ndim != 2:
+        raise TypeError(f"tile_gemm() 'b' argument must be a two-dimensional array, got {b!r}")
+    if a.dtype not in _tile_gemm_dtypes or b.dtype not in _tile_gemm_dtypes:
+        raise TypeError("tile_gemm() arrays must have float16, bfloat16, float32, or float64 entries")
+
+    tile_shape = extract_tuple(arg_values["tile"], as_constant=True)
+    if len(tile_shape) != 3:
+        raise ValueError(f"tile_gemm() 'tile' must contain (M, N, K), got {tile_shape!r}")
+    if None in tile_shape:
+        raise ValueError("tile_gemm() 'tile' must be a compile-time constant")
+    if any(value <= 0 for value in tile_shape):
+        raise ValueError(f"tile_gemm() tile dimensions must be positive, got {tile_shape!r}")
+
+    matrix_shape = extract_tuple(arg_values["shape"], as_constant=True)
+    if len(matrix_shape) != 3:
+        raise ValueError(f"tile_gemm() 'shape' must contain (M, N, K), got {matrix_shape!r}")
+    if None in matrix_shape:
+        raise ValueError("tile_gemm() 'shape' must be a compile-time constant")
+    if any(value <= 0 for value in matrix_shape):
+        raise ValueError(f"tile_gemm() matrix dimensions must be positive, got {matrix_shape!r}")
+
+    return a, tile_shape, matrix_shape
+
+
+def _tile_gemm_transpose(arg_values, name):
+    value = arg_values[name]
+    if not hasattr(value, "constant") or value.constant is None:
+        raise ValueError(f"tile_gemm() '{name}' must be a compile-time constant")
+    return value.constant
+
+
+def tile_gemm_value_func(arg_types, arg_values):
+    if arg_types is None:
+        return tile(dtype=Float, shape=tuple[int, int])
+
+    a, (tile_m, tile_n, _), _ = _validate_tile_gemm_types(arg_types, arg_values)
+    dtype = type_to_warp(arg_values.get("dtype"))
+    if dtype is None:
+        dtype = float32 if a.dtype in (float16, bfloat16) else a.dtype
+    elif dtype not in _tile_gemm_accumulator_dtypes:
+        raise TypeError("tile_gemm() 'dtype' must be float16, float32, or float64")
+    return tile(dtype=dtype, shape=(tile_m, tile_n), storage="shared")
+
+
+def tile_gemm_out_value_func(arg_types, arg_values):
+    if arg_types is None:
+        return None
+
+    _, (tile_m, tile_n, _), _ = _validate_tile_gemm_types(arg_types, arg_values)
+    out = arg_types["out"]
+    if not is_tile(out):
+        raise TypeError(f"tile_gemm() 'out' argument must be a tile, got {out!r}")
+    if out.dtype not in _tile_gemm_accumulator_dtypes:
+        raise TypeError("tile_gemm() 'out' must have float16, float32, or float64 entries")
+    if out.shape != (tile_m, tile_n):
+        raise ValueError(f"tile_gemm() 'out' tile must have shape {(tile_m, tile_n)}, got {out.shape}")
+    out.storage = "shared"
+    return None
+
+
+def tile_gemm_lto_dispatch_func(
+    arg_types: Mapping[str, type],
+    return_type: Any,
+    return_values: List[Var],
+    arg_values: Mapping[str, Var],
+    options: Mapping[str, Any],
+    builder: warp._src.context.ModuleBuilder,
+):
+    a = arg_values["a"]
+    b = arg_values["b"]
+    i = arg_values["i"]
+    j = arg_values["j"]
+    alpha = arg_values["alpha"]
+    returns_tile = return_type is not None
+    if returns_tile:
+        out = return_values[0]
+        beta = Var("0.0", float32, False, 0.0, False)
+    else:
+        out = arg_values["out"]
+        beta = arg_values["beta"]
+    tile_shape = extract_tuple(arg_values["tile"], as_constant=True)
+    matrix_shape = extract_tuple(arg_values["shape"], as_constant=True)
+    tile_m, tile_n, tile_k = tile_shape
+    full_m, full_n, full_k = matrix_shape
+    transpose_a = _tile_gemm_transpose(arg_values, "transpose_a")
+    transpose_b = _tile_gemm_transpose(arg_values, "transpose_b")
+
+    if options["enable_backward"] and (a.type.dtype == bfloat16 or b.type.dtype == bfloat16):
+        raise TypeError(
+            "tile_gemm() does not support bfloat16 arrays when the backward pass is enabled. "
+            "Set the module option `enable_backward=False` when gradients are not needed, e.g. "
+            '`@wp.kernel(module="unique", module_options={"enable_backward": False})`.'
+        )
+
+    # The scalar fallback allocates one A and one B staging tile. The output
+    # tile itself is already included in codegen's shared-memory accounting.
+    staging_memory = _tile_gemm_staging_memory(tile_shape, a.type.dtype, b.type.dtype)
+    accumulate = not returns_tile and beta.constant != 0
+    # A returned tile is created at this call, so its uninitialized storage can
+    # safely back the pipeline. An explicit output tile may have later live
+    # shared allocations adjacent to it and must never be extended in place.
+    reuse_output_workspace = returns_tile and not options["enable_backward"]
+
+    def scalar_dispatch():
+        null_pipeline = Var("0", str, False, True, False)
+        return (
+            (_tile_gemm_pipeline_functions_arg(), null_pipeline, a, b, i, j, out, alpha, beta),
+            _tile_gemm_template_args(
+                tile_shape, matrix_shape, transpose_a, transpose_b, accumulate, reuse_output_workspace
+            ),
+            [],
+            staging_memory,
+            staging_memory,
+            staging_memory,
+        )
+
+    # The pipeline copies to dense row-major storage with 16-byte alignment.
+    # Views may have arbitrary strides or offsets; the portable path honors both.
+    if (
+        not out.type.owner
+        or tuple(out.type.strides) != (tile_n, 1)
+        or not _tile_gemm_pipeline_supported(tile_shape, matrix_shape, a.type.dtype, b.type.dtype, options)
+    ):
+        return scalar_dispatch()
+
+    arch = options.get("device_arch") or options["output_arch"]
+
+    prior_lto_symbols = set(builder.ltoirs)
+
+    def discard_new_pipeline_lto():
+        for symbol in set(builder.ltoirs) - prior_lto_symbols:
+            builder.ltoirs.pop(symbol, None)
+            builder.ltoirs_decl.pop(symbol, None)
+            builder.native_code.pop(symbol, None)
+            builder.gemm_pipeline_metadata.pop(symbol, None)
+
+    try:
+        pipeline = warp._src.build.build_lto_gemm_pipeline(
+            tile_m,
+            tile_n,
+            tile_k,
+            full_m,
+            full_n,
+            full_k,
+            a.type.dtype,
+            b.type.dtype,
+            out.type.dtype,
+            "colmajor" if transpose_a else "rowmajor",
+            "colmajor" if transpose_b else "rowmajor",
+            "rowmajor",
+            arch,
+            options["block_dim"],
+            _TILE_GEMM_PIPELINE_DEPTH,
+            builder,
+        )
+    except RuntimeError as err:
+        discard_new_pipeline_lto()
+        log_warning(f"tile_gemm() falling back to the scalar GEMM path: {err}")
+        return scalar_dispatch()
+
+    symbols = pipeline["symbols"]
+    functions_arg = _tile_gemm_pipeline_functions_arg(symbols)
+    pipeline_arg = Var("0", str, False, True, False)
+    pipeline_arg.gemm_pipeline = {key: value for key, value in pipeline.items() if key != "lto"}
+    pipeline_memory = pipeline["shared_memory_buffer_size"] + pipeline["shared_memory_buffer_alignment"] - 1
+    if reuse_output_workspace:
+        # With beta=0, the output is uninitialized while the pipeline runs, so
+        # its allocation doubles as the front of the pipeline buffer.
+        output_memory = tile.round_up(tile_m * tile_n * type_size_in_bytes(out.type.dtype))
+        pipeline_memory = max(0, pipeline_memory - output_memory)
+    pipeline_memory = tile.round_up(pipeline_memory)
+    extra_shared_memory = max(staging_memory, pipeline_memory)
+    return (
+        (functions_arg, pipeline_arg, a, b, i, j, out, alpha, beta),
+        _tile_gemm_template_args(
+            tile_shape,
+            matrix_shape,
+            transpose_a,
+            transpose_b,
+            accumulate,
+            reuse_output_workspace,
+            pipeline,
+        ),
+        [pipeline["lto"]],
+        extra_shared_memory,
+        staging_memory,
+        pipeline_memory,
+    )
+
+
+add_builtin(
+    "tile_gemm",
+    input_types={
+        "a": array(dtype=Float, ndim=2),
+        "b": array(dtype=Float, ndim=2),
+        "i": int,
+        "j": int,
+        "out": tile(dtype=Float, shape=tuple[int, int]),
+        "tile": tuple[int, int, int],
+        "shape": tuple[int, int, int],
+        "transpose_a": bool,
+        "transpose_b": bool,
+        "alpha": Float,
+        "beta": Float,
+    },
+    defaults={"transpose_a": False, "transpose_b": False, "alpha": 1.0, "beta": 1.0},
+    value_func=tile_gemm_out_value_func,
+    lto_dispatch_func=tile_gemm_lto_dispatch_func,
+    native_func="tile_gemm_acc",
+    variadic=False,
+    doc="""Compute one output tile of a matrix product over global arrays.
+
+    This form computes ``out = alpha * a_rows * b_columns + beta * out`` over
+    the complete shared reduction dimension. See the return-value overload for
+    the global-array and tile-coordinate contract.
+
+    Output views preserve their strides and use the portable implementation.
+    Gradients with respect to ``alpha`` and ``beta`` are not supported.
+
+    Args:
+        a: Dense two-dimensional left-hand array, logically shaped ``(M, K)``.
+        b: Dense two-dimensional right-hand array, logically shaped ``(K, N)``.
+        i: Row index of the output tile.
+        j: Column index of the output tile.
+        out: Shared-memory accumulator tile with shape ``(TM, TN)``. Its
+            datatype may differ from the input datatypes.
+        tile: Compile-time ``(TM, TN, TK)`` tile dimensions.
+        shape: Compile-time complete matrix dimensions ``(M, N, K)``.
+        transpose_a: Whether to transpose ``a`` logically before multiplication.
+        transpose_b: Whether to transpose ``b`` logically before multiplication.
+        alpha: Product scaling factor.
+        beta: Accumulator scaling factor.
+""",
+    group="Tile Primitives",
+    export=False,
+)
+
+add_builtin(
+    "tile_gemm",
+    input_types={
+        "a": array(dtype=Float, ndim=2),
+        "b": array(dtype=Float, ndim=2),
+        "i": int,
+        "j": int,
+        "tile": tuple[int, int, int],
+        "shape": tuple[int, int, int],
+        "transpose_a": bool,
+        "transpose_b": bool,
+        "alpha": Float,
+        "dtype": Any,
+    },
+    defaults={"transpose_a": False, "transpose_b": False, "alpha": 1.0, "dtype": None},
+    value_func=tile_gemm_value_func,
+    lto_dispatch_func=tile_gemm_lto_dispatch_func,
+    variadic=False,
+    doc="""Compute one output tile of a matrix product over global arrays.
+
+    The operation computes all of the shared reduction dimension, unlike
+    :func:`tile_matmul`, which multiplies one pair of input tiles. For
+    ``tile=(TM, TN, TK)``, the result is equivalent to::
+
+        result = alpha * (a[i * TM : (i + 1) * TM, :] @ b[:, j * TN : (j + 1) * TN])
+
+    Boundary tiles are zero-padded while loading. The returned tile can be
+    consumed by other tile operations or written with :func:`tile_store`.
+    The complete ``(TM, TN)`` tile is returned, including zero product values
+    beyond ``M`` or ``N``. The output-tile overload applies ``beta`` to every
+    element of ``out``, including those outside the logical matrix.
+    In a two-dimensional launch, :func:`tid` makes ``j`` the fastest-changing
+    tile coordinate. This usually gives the desired panel reuse for TN and TT.
+    For NN, large grids may benefit from launching ``(tiles_n, tiles_m)`` and
+    unpacking ``j, i = tid()`` so that ``i`` changes fastest; the best order is
+    device- and shape-dependent.
+
+    The generic adjoint uses portable scalar tile products and atomically
+    accumulates into the input-array gradients; it does not use the forward
+    device pipeline. Performance-critical code with a global two-dimensional
+    output gradient can instead provide a custom gradient that computes
+    ``adj_a = alpha * (adj_output @ b.T)`` and ``adj_b = alpha * (a.T @ adj_output)`` with two
+    appropriately transposed :func:`tile_gemm` operations.
+    Gradients with respect to ``alpha`` are not supported. Bfloat16 inputs
+    require the module option ``enable_backward=False``.
+
+    Args:
+        a: Dense two-dimensional left-hand array, logically shaped ``(M, K)``.
+        b: Dense two-dimensional right-hand array, logically shaped ``(K, N)``.
+        i: Row index of the output tile.
+        j: Column index of the output tile.
+        tile: Compile-time ``(TM, TN, TK)`` tile dimensions.
+        shape: Compile-time complete matrix dimensions ``(M, N, K)``.
+        transpose_a: Whether to transpose ``a`` logically before multiplication.
+        transpose_b: Whether to transpose ``b`` logically before multiplication.
+        alpha: Product scaling factor.
+        dtype: Accumulator and output datatype: float16, float32, or float64.
+            Uses float32 when ``a`` is float16 or bfloat16; otherwise uses
+            the datatype of ``a``.
+
+    Returns:
+        A shared-memory tile with shape ``(TM, TN)`` and the selected output datatype.
+""",
+    group="Tile Primitives",
+    export=False,
+)
+
+
 def _tile_matmul_complex_unsupported():
     """Raise a ``TypeError`` explaining that complex tiles are unsupported by ``tile_matmul()``."""
     raise TypeError(

@@ -850,6 +850,38 @@ WP_API bool wp_cuda_compile_dot(
     int ldb,
     int ldc
 );
+WP_API bool wp_cuda_compile_gemm_pipeline(
+    const char* ltoir_output_path,
+    const char* symbol_prefix,
+    int arch,
+    int tile_m,
+    int tile_n,
+    int tile_k,
+    int full_m,
+    int full_n,
+    int full_k,
+    int storage_precision_a,
+    int storage_precision_b,
+    int storage_precision_c,
+    int compute_precision_a,
+    int compute_precision_b,
+    int accumulator_precision,
+    int type,
+    int arrangement_a,
+    int arrangement_b,
+    int arrangement_c,
+    int num_threads,
+    int pipeline_depth,
+    int* device_pipeline_storage_size,
+    int* device_pipeline_storage_alignment,
+    int* shared_memory_buffer_size,
+    int* shared_memory_buffer_alignment,
+    int* tile_pipeline_storage_size,
+    int* tile_pipeline_storage_alignment,
+    int* accumulator_storage_size,
+    int* accumulator_storage_alignment,
+    int* pipeline_block_dim
+);
 WP_API bool wp_cuda_compile_solver(
     const char* fatbin_output_path,
     const char* ltoir_output_path,

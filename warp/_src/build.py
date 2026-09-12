@@ -503,42 +503,69 @@ def _build_lto_base(lto_symbol, compile_func, builder, extra_files=None):
         return (result, outputs[".lto"], *[outputs[ext] for ext in extra_files.keys()])
 
 
+_CUBLASDX_TYPE_MAP = {
+    float16: ("wp::float16", 3, 0),
+    bfloat16: ("wp::bfloat16", 2, 0),
+    float32: ("wp::float32", 5, 0),
+    float64: ("wp::float64", 6, 0),
+    vec2h: ("wp::vec2h", 3, 1),
+    vec2f: ("wp::vec2f", 5, 1),
+    vec2d: ("wp::vec2d", 6, 1),
+}
+_CUBLASDX_ARRANGEMENT_MAP = {
+    "colmajor": 0,
+    "rowmajor": 1,
+}
+_GEMM_PIPELINE_METADATA_FIELDS = (
+    "device_pipeline_storage_size",
+    "device_pipeline_storage_alignment",
+    "shared_memory_buffer_size",
+    "shared_memory_buffer_alignment",
+    "tile_pipeline_storage_size",
+    "tile_pipeline_storage_alignment",
+    "accumulator_storage_size",
+    "accumulator_storage_alignment",
+    "pipeline_block_dim",
+)
+_GEMM_PIPELINE_SYMBOL_SUFFIXES = (
+    "create_device",
+    "create_tile",
+    "create_accumulator",
+    "finish_accumulation",
+    "execute",
+    "copy",
+    "destroy_accumulator",
+    "destroy_tile",
+    "destroy_device",
+)
+_GEMM_PIPELINE_TILE_FUNCTION_SUFFIXES = _GEMM_PIPELINE_SYMBOL_SUFFIXES[1:-1]
+
+
+def _cublasdx_type(dtype):
+    try:
+        return _CUBLASDX_TYPE_MAP[dtype]
+    except KeyError:
+        raise TypeError(f"Unsupported cuBLASDx input type {dtype}") from None
+
+
+def _cublasdx_arrangement(layout):
+    try:
+        return _CUBLASDX_ARRANGEMENT_MAP[layout]
+    except KeyError:
+        raise ValueError(f"Unsupported cuBLASDx layout {layout!r}") from None
+
+
 def build_lto_dot(
     M, N, K, adtype, bdtype, cdtype, alayout, blayout, clayout, arch, num_threads, builder, lda=None, ldb=None, ldc=None
 ):
     arch = 120 if arch > 121 else arch
 
-    # Maps Python/Warp types to C++ types and enums
-    def cublasdx_type_map(dtype):
-        if dtype == float16:
-            return ("wp::float16", 3, 0)
-        if dtype == bfloat16:
-            return ("wp::bfloat16", 2, 0)  # COMMONDX_PRECISION_BF16
-        if dtype == float32:
-            return ("wp::float32", 5, 0)
-        if dtype == float64:
-            return ("wp::float64", 6, 0)
-        if dtype == vec2h:
-            return ("wp::vec2h", 3, 1)
-        if dtype == vec2f:
-            return ("wp::vec2f", 5, 1)
-        if dtype == vec2d:
-            return ("wp::vec2d", 6, 1)
-        raise TypeError("Unsupported input type in tile_matmul")
-
-    def cublasdx_arrangement_map(layout):
-        if layout == "colmajor":
-            return 0  # CUBLASDX_ARRANGEMENT_COL_MAJOR
-        if layout == "rowmajor":
-            return 1  # CUBLASDX_ARRANGEMENT_ROW_MAJOR
-        raise ValueError("Unsupported layout in tile_matmul")
-
-    (a_dtype, a_prec, a_type) = cublasdx_type_map(adtype)
-    (b_dtype, b_prec, b_type) = cublasdx_type_map(bdtype)
-    (c_dtype, c_prec, c_type) = cublasdx_type_map(cdtype)
-    a_arrangement = cublasdx_arrangement_map(alayout)
-    b_arrangement = cublasdx_arrangement_map(blayout)
-    c_arrangement = cublasdx_arrangement_map(clayout)
+    (a_dtype, a_prec, a_type) = _cublasdx_type(adtype)
+    (b_dtype, b_prec, b_type) = _cublasdx_type(bdtype)
+    (c_dtype, c_prec, c_type) = _cublasdx_type(cdtype)
+    a_arrangement = _cublasdx_arrangement(alayout)
+    b_arrangement = _cublasdx_arrangement(blayout)
+    c_arrangement = _cublasdx_arrangement(clayout)
 
     if a_type != b_type or a_type != c_type:
         raise TypeError("tile_matmul(A, B, C) requires all inputs to be real or complex")
@@ -617,6 +644,183 @@ def build_lto_dot(
         )
 
     return lto_symbol, lto_code_data
+
+
+def build_lto_gemm_pipeline(
+    tile_m,
+    tile_n,
+    tile_k,
+    full_m,
+    full_n,
+    full_k,
+    adtype,
+    bdtype,
+    cdtype,
+    alayout,
+    blayout,
+    clayout,
+    arch,
+    num_threads,
+    pipeline_depth,
+    builder,
+):
+    """Build the device functions used by a global-memory cuBLASDx GEMM pipeline."""
+    arch = 120 if arch > 121 else arch
+
+    _, a_precision, a_type = _cublasdx_type(adtype)
+    _, b_precision, b_type = _cublasdx_type(bdtype)
+    _, c_precision, c_type = _cublasdx_type(cdtype)
+    if a_type != b_type or a_type != c_type:
+        raise TypeError("tile_gemm(A, B) requires all inputs to be real or complex")
+
+    storage_precisions = (a_precision, b_precision, c_precision)
+    # Keep tensor storage separate from descriptor arithmetic. The current
+    # policy uses the input formats for products and the output format to accumulate.
+    arithmetic_precisions = storage_precisions
+    storage_key = "_".join(map(str, storage_precisions))
+    arithmetic_key = "_".join(map(str, arithmetic_precisions))
+    arrangement_a = _cublasdx_arrangement(alayout)
+    arrangement_b = _cublasdx_arrangement(blayout)
+    arrangement_c = _cublasdx_arrangement(clayout)
+    lto_symbol = (
+        f"gemm_pipeline_v8_{tile_m}_{tile_n}_{tile_k}_{full_m}_{full_n}_{full_k}"
+        f"_{arch}_{num_threads}_{pipeline_depth}"
+        f"_{arrangement_a}_{arrangement_b}_{arrangement_c}"
+        f"_storage_{storage_key}_arithmetic_{arithmetic_key}_{a_type}"
+    )
+    symbol_names = {suffix: f"{lto_symbol}_{suffix}" for suffix in _GEMM_PIPELINE_SYMBOL_SUFFIXES}
+
+    def load_metadata(path):
+        if not os.path.exists(path):
+            return None
+        try:
+            with open(path) as metadata_file:
+                metadata = json.load(metadata_file)
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            return None
+        required = set(_GEMM_PIPELINE_METADATA_FIELDS)
+        if not isinstance(metadata, dict) or not required.issubset(metadata):
+            return None
+        if any(type(metadata[key]) is not builtins.int or metadata[key] < 0 for key in required):
+            return None
+        return metadata
+
+    def compile_lto_pipeline(temp_paths):
+        outputs = {key: ctypes.c_int() for key in _GEMM_PIPELINE_METADATA_FIELDS}
+        result = warp._src.context.runtime.core.wp_cuda_compile_gemm_pipeline(
+            temp_paths[".lto"].encode("utf-8"),
+            lto_symbol.encode("utf-8"),
+            arch,
+            tile_m,
+            tile_n,
+            tile_k,
+            full_m,
+            full_n,
+            full_k,
+            *storage_precisions,
+            *arithmetic_precisions,
+            a_type,
+            arrangement_a,
+            arrangement_b,
+            arrangement_c,
+            num_threads,
+            pipeline_depth,
+            *(ctypes.byref(value) for value in outputs.values()),
+        )
+        if not result:
+            return False, {}
+
+        with open(temp_paths[".lto"], "rb") as lto_file:
+            lto_code_data = lto_file.read()
+        metadata = {key: value.value for key, value in outputs.items()}
+        with open(temp_paths[".meta"], "w") as metadata_file:
+            json.dump(metadata, metadata_file, sort_keys=True)
+        return True, {".lto": lto_code_data, ".meta": metadata}
+
+    if lto_symbol in builder.ltoirs:
+        lto_code_data = builder.ltoirs[lto_symbol]
+        metadata = builder.gemm_pipeline_metadata[lto_symbol]
+    else:
+        result, lto_code_data, metadata = _build_lto_base(
+            lto_symbol,
+            compile_lto_pipeline,
+            builder,
+            {".meta": load_metadata},
+        )
+        if not result:
+            raise RuntimeError(
+                f"Failed to compile tile_gemm LTO '{lto_symbol}'. "
+                "tile_gemm pipelines require CUDA 13, NVRTC 13.1 or newer on SM100+, and libmathdx 0.4.0 or newer. "
+                "Set LIBMATHDX_LOG_LEVEL=5 and rerun for more details."
+            )
+        if metadata["pipeline_block_dim"] != num_threads:
+            raise RuntimeError(
+                f"tile_gemm pipeline selected block_dim={metadata['pipeline_block_dim']}, "
+                f"but the Warp kernel uses block_dim={num_threads}"
+            )
+
+        builder.ltoirs[lto_symbol] = lto_code_data
+        builder.gemm_pipeline_metadata[lto_symbol] = metadata
+
+        tensor_type = "libmathdx_tensor_0s_0s"
+        shared_tensor_type = "libmathdx_tensor_0s_0s"
+        pipeline_type = "libmathdx_pipeline"
+        declarations = {
+            "create_device": f"void {symbol_names['create_device']}({pipeline_type}, {tensor_type}, {tensor_type});",
+            "create_tile": (
+                f"void {symbol_names['create_tile']}({pipeline_type}, {pipeline_type}, char*, int*, int*);"
+            ),
+            "create_accumulator": (
+                f"void {symbol_names['create_accumulator']}({pipeline_type}, {shared_tensor_type});"
+            ),
+            "finish_accumulation": f"void {symbol_names['finish_accumulation']}({shared_tensor_type});",
+            "execute": f"void {symbol_names['execute']}({pipeline_type}, {shared_tensor_type});",
+            "copy": f"void {symbol_names['copy']}({shared_tensor_type}, {shared_tensor_type});",
+            "destroy_accumulator": (f"void {symbol_names['destroy_accumulator']}({shared_tensor_type});"),
+            "destroy_tile": f"void {symbol_names['destroy_tile']}({pipeline_type});",
+            "destroy_device": f"void {symbol_names['destroy_device']}({pipeline_type});",
+        }
+        for suffix, declaration in declarations.items():
+            builder.ltoirs_decl[symbol_names[suffix]] = declaration
+
+        init_kernel = f"{lto_symbol}_init"
+        destroy_kernel = f"{lto_symbol}_destroy"
+        builder.native_code[lto_symbol] = f"""
+extern \"C\" __global__ void {init_kernel}(
+    void* pipeline_ptr,
+    void* a_ptr,
+    void* b_ptr)
+{{
+    if (threadIdx.x == 0) {{
+        {tensor_type} a {{a_ptr}};
+        {tensor_type} b {{b_ptr}};
+        {pipeline_type} pipeline {{pipeline_ptr}};
+        {symbol_names["create_device"]}(pipeline, a, b);
+    }}
+}}
+
+extern \"C\" __global__ void {destroy_kernel}(void* pipeline_ptr)
+{{
+    if (threadIdx.x == 0) {{
+        {pipeline_type} pipeline {{pipeline_ptr}};
+        {symbol_names["destroy_device"]}(pipeline);
+    }}
+}}
+"""
+
+    return {
+        "lto_symbol": lto_symbol,
+        "lto": lto_code_data,
+        "symbols": symbol_names,
+        "init_kernel": f"{lto_symbol}_init",
+        "destroy_kernel": f"{lto_symbol}_destroy",
+        "tile": (tile_m, tile_n, tile_k),
+        "shape": (full_m, full_n, full_k),
+        "dtype": type_repr(adtype),
+        "arrangements": (alayout, blayout, clayout),
+        "pipeline_depth": pipeline_depth,
+        **metadata,
+    }
 
 
 def build_lto_solver(
