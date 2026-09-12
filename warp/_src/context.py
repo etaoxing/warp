@@ -2865,6 +2865,13 @@ def _get_cpu_toolchain_version() -> str:
     return _cpu_toolchain_version_cache
 
 
+def _get_gemm_launch_limits(device, output_arch):
+    if device is None or not device.is_cuda or device.arch != output_arch:
+        return None
+    limits = getattr(device, "_gemm_launch_limits", None)
+    return list(limits) if limits else None
+
+
 def _get_cpu_target_hash(resolved_flags: str) -> str:
     """Return a short hash identifying the CPU compilation target.
 
@@ -3464,6 +3471,7 @@ class ModuleBuilder:
 
         if self.gemm_pipeline_metadata:
             meta["_cuda_arch_suffix"] = "a"
+            meta["_gemm_launch_limits_v1"] = self.options.get("_gemm_launch_limits_v1")
 
         for kernel in self.kernels:
             forward_name = warp._src.codegen.cuda_kernel_forward_name(kernel)
@@ -4667,6 +4675,11 @@ class Module:
             else:
                 arch_suffix = ""
 
+        limits = _get_gemm_launch_limits(device, final_arch)
+        if arch_suffix == "a" and limits:
+            fingerprint = hashlib.sha256(f"gemm-residency-v1:{limits}".encode()).hexdigest()[:12]
+            module_name_short += f".gemm{fingerprint}"
+
         if use_ptx:
             output_name = f"{module_name_short}.sm{final_arch}{arch_suffix}.ptx"
         else:
@@ -4687,9 +4700,10 @@ class Module:
         """Discover linked-code requirements only from this target's binary metadata."""
         for suffix in ("a", "f"):
             output_name = self._get_compile_output_name(None, output_arch, suffix, False, block_dim=block_dim)
-            meta_path = os.path.join(output_dir, self._get_meta_name(block_dim, output_name))
-            if os.path.exists(os.path.join(output_dir, output_name)):
-                if _read_required_cuda_arch_suffix(meta_path) == suffix:
+            meta_path = Path(output_dir) / self._get_meta_name(block_dim, output_name)
+            pattern = f"{self.get_module_identifier(block_dim)}.gemm*.sm{output_arch}{suffix}.meta"
+            for candidate in (meta_path, *sorted(Path(output_dir).glob(pattern))):
+                if candidate.with_suffix(".cubin").exists() and _read_required_cuda_arch_suffix(candidate) == suffix:
                     return suffix
         return None
 
@@ -4773,7 +4787,12 @@ class Module:
         is_cpu = output_arch is None
 
         device_arch = device.arch if device is not None and device.is_cuda else output_arch
-        options = options | {"output_arch": output_arch, "device_arch": device_arch}
+        automatic_output_name = output_name is None
+        options = options | {
+            "output_arch": output_arch,
+            "device_arch": device_arch,
+            "_gemm_launch_limits_v1": _get_gemm_launch_limits(device, output_arch) if automatic_output_name else None,
+        }
 
         # ``options`` is the resolved dict for the active block_dim variant
         # (set by ``Module.load`` via ``resolve_options(block_dim=...)``). Use
@@ -4798,7 +4817,12 @@ class Module:
         )
         if required_arch_suffix == "a" and device is not None:
             output_arch = device.arch
-            options = options | {"output_arch": output_arch}
+            options = options | {
+                "output_arch": output_arch,
+                "_gemm_launch_limits_v1": _get_gemm_launch_limits(device, output_arch)
+                if automatic_output_name
+                else None,
+            }
         if required_arch_suffix is not None:
             use_ptx = False
 
@@ -4815,7 +4839,6 @@ class Module:
         else:
             arch_suffix = ""
 
-        automatic_output_name = output_name is None
         if output_name is None:
             output_name = self._get_compile_output_name(
                 device, output_arch, arch_suffix, use_ptx, block_dim=active_block_dim
@@ -4867,7 +4890,12 @@ class Module:
             final_output_arch = device.arch if device is not None else output_arch
             if final_output_arch != output_arch:
                 output_arch = final_output_arch
-                options = options | {"output_arch": output_arch}
+                options = options | {
+                    "output_arch": output_arch,
+                    "_gemm_launch_limits_v1": _get_gemm_launch_limits(device, output_arch)
+                    if automatic_output_name
+                    else None,
+                }
                 try:
                     source_str, source_code_ext, meta, ltoir_values, fatbin_values = self._run_codegen(options, is_cpu)
                 except Exception as e:
@@ -5941,6 +5969,7 @@ class Device:
         self.alias = alias
         self.ordinal = ordinal
         self.is_primary = is_primary
+        self._gemm_launch_limits = None
 
         # context can be None to avoid acquiring primary contexts until the device is used
         self._context = context
@@ -5990,6 +6019,9 @@ class Device:
             self.arch = runtime.core.wp_cuda_device_get_arch(ordinal)
             self.sm_count = runtime.core.wp_cuda_device_get_sm_count(ordinal)
             self.max_shared_memory_per_block = runtime.core.wp_cuda_device_get_max_shared_memory(ordinal)
+            launch_limits = (ctypes.c_int * 6)()
+            if runtime.core.wp_cuda_device_get_gemm_launch_limits(ordinal, launch_limits):
+                self._gemm_launch_limits = tuple(launch_limits)
             self.is_uva = runtime.core.wp_cuda_device_is_uva(ordinal) > 0
             self.is_cpu_memory_access_from_gpu_supported = (
                 runtime.core.wp_cuda_device_get_pageable_memory_access(ordinal) > 0
@@ -8025,6 +8057,9 @@ class Runtime:
             self.core.wp_cuda_device_get_sm_count.restype = ctypes.c_int
             self.core.wp_cuda_device_get_max_shared_memory.argtypes = [ctypes.c_int]
             self.core.wp_cuda_device_get_max_shared_memory.restype = ctypes.c_int
+            if self.core.wp_is_cuda_enabled():
+                self.core.wp_cuda_device_get_gemm_launch_limits.argtypes = [ctypes.c_int, ctypes.POINTER(ctypes.c_int)]
+                self.core.wp_cuda_device_get_gemm_launch_limits.restype = ctypes.c_bool
             self.core.wp_cuda_device_is_uva.argtypes = [ctypes.c_int]
             self.core.wp_cuda_device_is_uva.restype = ctypes.c_int
             self.core.wp_cuda_device_get_pageable_memory_access.argtypes = [ctypes.c_int]
@@ -13109,15 +13144,23 @@ def load_aot_module(
             candidates = ((use_ptx, ""),)
 
         for candidate_use_ptx, candidate_arch_suffix in candidates:
+            effective_suffix = candidate_arch_suffix or (d._get_cuda_arch_suffix(output_arch) if d.is_cuda else "")
             candidate_path = os.path.join(
                 module_dir,
                 module_object._get_compile_output_name(
                     d,
                     output_arch,
-                    arch_suffix=candidate_arch_suffix,
+                    arch_suffix=effective_suffix,
                     use_ptx=candidate_use_ptx,
                 ),
             )
+            # AOT binaries may have no device policy, or one from another
+            # same-architecture device. Launch-bound hints do not change their ABI.
+            if d.is_cuda and not os.path.exists(candidate_path):
+                legacy = module_object._get_compile_output_name(None, output_arch, effective_suffix, candidate_use_ptx)
+                pattern = legacy.replace(f".sm{output_arch}", f".gemm*.sm{output_arch}")
+                alternatives = (Path(module_dir) / legacy, *sorted(Path(module_dir).glob(pattern)))
+                candidate_path = next((os.fspath(path) for path in alternatives if path.exists()), candidate_path)
             tried_paths.append(candidate_path)
             if os.path.exists(candidate_path):
                 binary_path = candidate_path

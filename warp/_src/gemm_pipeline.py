@@ -54,6 +54,32 @@ class GemmPipelineCodegen:
         self.has_unbound_pipeline = False
         self._calls = []
 
+    def forward_launch_bounds(self, options):
+        limits = options.get("_gemm_launch_limits_v1")
+        if (
+            not limits
+            or options.get("output_arch") != options.get("device_arch")
+            or options.get("llvm_cuda", False)
+            or options.get("cluster_dim", 1) != 1
+            or "launch_bounds" in options
+            or "cuda_max_registers" in options
+            or not self.adj.gemm_pipeline_requirements
+            or self.has_unbound_pipeline
+        ):
+            return ""
+        shared = self.adj.get_total_required_shared_gemm_pipeline()
+        if not shared:
+            return ""
+        smem_per_sm, reserved, threads_per_sm, blocks_per_sm, warp_size, granularity = limits
+        block_dim = options["block_dim"]
+        warps = (block_dim + warp_size - 1) // warp_size
+        # Include the allocator's per-warp offsets. Other static shared memory may
+        # lower actual residency; this register target never changes allocations.
+        shared += 4 * warps + reserved
+        shared = (shared + granularity - 1) // granularity * granularity
+        blocks = min(blocks_per_sm, threads_per_sm // (warps * warp_size), smem_per_sm // shared)
+        return f"__launch_bounds__({block_dim}, {blocks}) " if blocks > 1 else ""
+
     @staticmethod
     def _direct_array_arg(adj, value):
         """Return a direct array argument, or ``None`` for device-created views."""

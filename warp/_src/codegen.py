@@ -6966,7 +6966,7 @@ _INLINE_ATTRS = {"noinline": "WP_NOINLINE ", "forceinline": "WP_FORCEINLINE "}
 # The index flattens blockIdx.{z,y,x}; the grid shape (and its uint32 cap) is built in wp_cuda_launch_kernel.
 cuda_kernel_template_forward = """
 
-{line_directive}extern "C" {launch_bounds_str}{cluster_dims_str}__global__ void {max_registers_str}{forward_name}(
+{line_directive}extern "C" {forward_launch_bounds_str}{cluster_dims_str}__global__ void {max_registers_str}{forward_name}(
     {forward_args})
 {{
 {forward_smem_spilling_str}{line_directive}    wp::tile_shared_storage_t tile_mem;
@@ -6998,7 +6998,7 @@ cuda_kernel_template_backward = """
 
 cuda_kernel_template_forward_grid_stride = """
 
-{line_directive}extern "C" {launch_bounds_str}{cluster_dims_str}__global__ void {max_registers_str}{forward_name}(
+{line_directive}extern "C" {forward_launch_bounds_str}{cluster_dims_str}__global__ void {max_registers_str}{forward_name}(
     {forward_args})
 {{
 {forward_smem_spilling_str}{line_directive}    wp::tile_shared_storage_t tile_mem;
@@ -7036,7 +7036,7 @@ cuda_kernel_template_backward_grid_stride = """
 
 cuda_external_constant_params_kernel_template_forward = """
 
-{line_directive}extern "C" {launch_bounds_str}__global__ void {forward_name}()
+{line_directive}extern "C" {forward_launch_bounds_str}__global__ void {forward_name}()
 {{
 {constant_params_alias}{forward_body}{line_directive}}}
 
@@ -7998,6 +7998,8 @@ def codegen_kernel(kernel, device, options):
             "forward_body": forward_body,
             "line_directive": func_line_directive,
             "launch_bounds_str": launch_bounds_str,
+            "forward_launch_bounds_str": launch_bounds_str
+            or (adj.gemm_pipeline.forward_launch_bounds(options) if device == "cuda" else ""),
             "cluster_dims_str": cluster_dims_str,
             "max_registers_str": max_registers_str,
             "forward_smem_spilling_str": forward_smem_spilling_str,

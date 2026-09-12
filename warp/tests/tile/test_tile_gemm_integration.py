@@ -18,7 +18,7 @@ import numpy as np
 
 import warp as wp
 from warp._src import build, builtins, codegen, context, deterministic
-from warp._src.gemm_pipeline import complete_gemm_pipeline_metadata
+from warp._src.gemm_pipeline import GemmPipelineCodegen, complete_gemm_pipeline_metadata
 
 
 def _make_custom_kernel(replay):
@@ -167,6 +167,70 @@ class TestTileGemmIntegration(unittest.TestCase):
     def setUpClass(cls):
         wp.init()
 
+    def test_gemm_residency_bounds(self):
+        adj = SimpleNamespace(get_total_required_shared_gemm_pipeline=lambda: 16384)
+        pipeline = GemmPipelineCodegen(adj)
+        adj.gemm_pipeline_requirements.append(object())
+        options = {
+            "_gemm_launch_limits_v1": [102400, 1024, 1536, 24, 32, 128],
+            "output_arch": 120,
+            "device_arch": 120,
+            "block_dim": 64,
+        }
+        self.assertEqual(pipeline.forward_launch_bounds(options), "__launch_bounds__(64, 5) ")
+        # This boundary distinguishes CUDA's 128-byte allocation unit from 256.
+        adj.get_total_required_shared_gemm_pipeline = lambda: 15984
+        self.assertEqual(pipeline.forward_launch_bounds(options), "__launch_bounds__(64, 6) ")
+        adj.get_total_required_shared_gemm_pipeline = lambda: 65584
+        self.assertEqual(pipeline.forward_launch_bounds(options | {"block_dim": 256}), "")
+        adj.get_total_required_shared_gemm_pipeline = lambda: 16384
+        for override in (
+            {"_gemm_launch_limits_v1": None},
+            {"output_arch": 89},
+            {"llvm_cuda": True},
+            {"cluster_dim": 2},
+            {"launch_bounds": (64, 2)},
+            {"cuda_max_registers": 100},
+        ):
+            with self.subTest(override=override):
+                self.assertEqual(pipeline.forward_launch_bounds(options | override), "")
+        pipeline.has_unbound_pipeline = True
+        self.assertEqual(pipeline.forward_launch_bounds(options), "")
+        pipeline.has_unbound_pipeline = False
+        adj.gemm_pipeline_requirements.clear()
+        self.assertEqual(pipeline.forward_launch_bounds(options), "")
+
+    def test_gemm_residency_bound_is_forward_only(self):
+        kernel, _ = _make_execution_kernel(False)
+        kernel.module.get_module_hash(64)
+        options = kernel.module.resolve_options(wp.config, block_dim=64) | {
+            "output_arch": 120,
+            "device_arch": 120,
+            "_gemm_launch_limits_v1": [102400, 1024, 1536, 24, 32, 128],
+        }
+
+        def compile_pipeline(*args):
+            metadata = _mock_pipeline_metadata(*args)
+            args[-1].gemm_pipeline_metadata[metadata["lto_symbol"]] = metadata
+            return metadata
+
+        with (
+            mock.patch.object(builtins, "_tile_gemm_pipeline_supported", return_value=True),
+            mock.patch.object(build, "build_lto_gemm_pipeline", side_effect=compile_pipeline),
+        ):
+            for explicit in ({}, {"launch_bounds": (64, 2)}, {"cuda_max_registers": 100}):
+                source, _, meta, _, _ = kernel.module._run_codegen(options | explicit, is_cpu=False)
+                forward = next(line for line in source.splitlines() if codegen.cuda_kernel_forward_name(kernel) in line)
+                backward = next(
+                    line for line in source.splitlines() if codegen.cuda_kernel_backward_name(kernel) in line
+                )
+                self.assertEqual("__launch_bounds__" in forward, "cuda_max_registers" not in explicit)
+                self.assertEqual("__launch_bounds__" in backward, "launch_bounds" in explicit)
+                if "launch_bounds" in explicit:
+                    self.assertIn("__launch_bounds__(64, 2)", forward)
+                    self.assertIn("__launch_bounds__(64, 2)", backward)
+                self.assertEqual(meta["_gemm_launch_limits_v1"], options["_gemm_launch_limits_v1"])
+
     def test_pipeline_precision_abi_and_cache(self):
         calls = []
         metadata = _pipeline_metadata()
@@ -259,12 +323,14 @@ class TestTileGemmIntegration(unittest.TestCase):
                 context=arch,
                 alias=f"sm{arch}",
                 _get_cuda_arch_suffix=lambda _: "",
+                _gemm_launch_limits=(102400, 1024, 1536, 24, 32, 128) if arch == 120 else None,
             )
 
         def generate(options, is_cpu):
             meta = {"test_smem_bytes": options["output_arch"]}
             if options["output_arch"] == 120:
                 meta["_cuda_arch_suffix"] = "a"
+                meta["_gemm_launch_limits_v1"] = options["_gemm_launch_limits_v1"]
             return "// mocked device code", "cu", meta, [], []
 
         def compile_cuda(source_path, arch, output_path, **kwargs):
@@ -278,11 +344,19 @@ class TestTileGemmIntegration(unittest.TestCase):
             mock.patch.object(module, "_run_codegen", side_effect=generate) as codegen,
             mock.patch.object(wp._src.build, "build_cuda", side_effect=compile_cuda),
         ):
+            legacy_name = module._get_compile_output_name(None, 120, "a", False, 64)
+            legacy_binary = Path(directory) / legacy_name
+            legacy_binary.write_bytes(b"legacy binary")
+            (Path(directory) / module._get_meta_name(64, legacy_name)).write_text(
+                json.dumps({"_cuda_arch_suffix": "a"})
+            )
             compiled, name120, _ = module._compile(
                 device(120), directory, output_arch=120, use_ptx=False, options=options
             )
             self.assertTrue(compiled)
             self.assertIn(".sm120a.", name120)
+            self.assertNotEqual(name120, legacy_name)
+            self.assertEqual(legacy_binary.read_bytes(), b"legacy binary")
             # Exercise a discovery manifest left by the previous cache schema.
             manifest = Path(directory) / module._get_meta_name(64)
             manifest.write_text(json.dumps({"_cuda_arch_suffix": "a", "_cuda_binary_metadata": True}))
@@ -301,6 +375,78 @@ class TestTileGemmIntegration(unittest.TestCase):
             self.assertFalse(compiled)
             self.assertEqual(name, name120)
             codegen.assert_not_called()
+
+            changed_device = device(120)
+            changed_device._gemm_launch_limits = (102400, 2048, 1536, 24, 32, 128)
+            compiled, changed_name, _ = module._compile(
+                changed_device, directory, output_arch=120, use_ptx=False, options=options
+            )
+            self.assertTrue(compiled, "Changed device limits must invalidate the compiled residency policy")
+            codegen.assert_called_once()
+            self.assertNotEqual(changed_name, name120)
+            self.assertTrue((Path(directory) / name120).exists())
+            metadata_path = Path(directory) / module._get_meta_name(64, changed_name)
+            metadata = json.loads(metadata_path.read_text())
+            self.assertEqual(metadata["_gemm_launch_limits_v1"], list(changed_device._gemm_launch_limits))
+            codegen.reset_mock()
+            compiled, _, _ = module._compile(changed_device, directory, output_arch=120, use_ptx=False, options=options)
+            self.assertFalse(compiled)
+            codegen.assert_not_called()
+            self.assertIsNone(context._get_gemm_launch_limits(changed_device, 89))
+
+            with (
+                mock.patch.dict(module.options, {"block_dim": 64}),
+                mock.patch.object(context, "get_device", return_value=changed_device),
+                mock.patch.object(context, "is_cuda_driver_initialized", return_value=False),
+                mock.patch.object(context, "is_cuda_available", return_value=False),
+                mock.patch.object(module, "load") as load,
+            ):
+                context.load_aot_module(module, device=changed_device, arch=120, module_dir=directory, use_ptx=False)
+                self.assertEqual(Path(load.call_args.kwargs["binary_path"]).name, changed_name)
+                changed_device._gemm_launch_limits = (102400, 4096, 1536, 24, 32, 128)
+                context.load_aot_module(module, device=changed_device, arch=120, module_dir=directory, use_ptx=False)
+                self.assertEqual(Path(load.call_args.kwargs["binary_path"]).name, legacy_name)
+                legacy_binary.unlink()
+                context.load_aot_module(module, device=changed_device, arch=120, module_dir=directory, use_ptx=False)
+                self.assertIn(Path(load.call_args.kwargs["binary_path"]).name, (name120, changed_name))
+
+    def test_aot_preserves_explicit_suffix_without_gemm_metadata(self):
+        @wp.kernel(module="unique", enable_backward=False)
+        def kernel():
+            pass
+
+        module = kernel.module
+
+        def device(reserved):
+            return SimpleNamespace(
+                arch=120,
+                is_cuda=True,
+                is_cpu=False,
+                alias="sm120",
+                _gemm_launch_limits=(102400, reserved, 1536, 24, 32, 128),
+                _get_cuda_arch_suffix=lambda _: "a",
+            )
+
+        target = device(2048)
+        for export_device, use_ptx in ((None, False), (None, True), (device(1024), False), (device(1024), True)):
+            with (
+                self.subTest(device_specific=export_device is not None, use_ptx=use_ptx),
+                tempfile.TemporaryDirectory() as directory,
+                mock.patch.object(wp.config, "cuda_arch_suffix", "a"),
+                mock.patch.object(context, "get_device", return_value=target),
+                mock.patch.object(context, "is_cuda_driver_initialized", return_value=False),
+                mock.patch.object(context, "is_cuda_available", return_value=False),
+                mock.patch.object(module, "load") as load,
+            ):
+                name = module._get_compile_output_name(export_device, 120, "a", use_ptx)
+                binary = Path(directory) / name
+                binary.write_bytes(b"AOT binary")
+                meta = Path(directory) / module._get_meta_name(output_name=name)
+                # Ordinary kernels have no linked-GEMM architecture requirement.
+                meta.write_text(json.dumps({"_cuda_binary_metadata": True}))
+                context.load_aot_module(module, device=target, arch=120, module_dir=directory, use_ptx=use_ptx)
+                self.assertEqual(Path(load.call_args.kwargs["binary_path"]), binary)
+                self.assertEqual(Path(load.call_args.kwargs["meta_path"]), meta)
 
     def test_deferred_helpers_reserve_their_workspace(self):
         for replay in (False, True):

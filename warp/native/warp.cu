@@ -14,6 +14,7 @@
 #include <cstdlib>
 #include <fstream>
 
+#include <cuda_occupancy.h>
 #include <nvPTXCompiler.h>
 #include <nvrtc.h>
 #if WP_ENABLE_MATHDX
@@ -2530,6 +2531,34 @@ int wp_cuda_device_get_max_shared_memory(int ordinal)
     if (ordinal >= 0 && ordinal < int(g_devices.size()))
         return g_devices[ordinal].max_smem_bytes;
     return 0;
+}
+
+bool wp_cuda_device_get_gemm_launch_limits(int ordinal, int limits[6])
+{
+    if (!limits || ordinal < 0 || ordinal >= int(g_devices.size()))
+        return false;
+
+    const auto& device = g_devices[ordinal];
+    const CUdevice_attribute attributes[] = {
+        CU_DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR,
+        CU_DEVICE_ATTRIBUTE_RESERVED_SHARED_MEMORY_PER_BLOCK,
+        CU_DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR,
+        CU_DEVICE_ATTRIBUTE_MAX_BLOCKS_PER_MULTIPROCESSOR,
+        CU_DEVICE_ATTRIBUTE_WARP_SIZE,
+    };
+    int values[6] = {};
+    for (int i = 0; i < 5; ++i) {
+        if (cuDeviceGetAttribute_f(&values[i], attributes[i], device.device) != CUDA_SUCCESS
+            || values[i] < (i == 1 ? 0 : 1))
+            return false;
+    }
+    cudaOccDeviceProp properties {};
+    properties.computeMajor = device.arch / 10;
+    properties.computeMinor = device.arch % 10;
+    if (cudaOccSMemAllocationGranularity(&values[5], &properties) != CUDA_OCC_SUCCESS)
+        return false;
+    std::copy(std::begin(values), std::end(values), limits);
+    return true;
 }
 
 void wp_cuda_device_get_uuid(int ordinal, char uuid[16])

@@ -677,6 +677,9 @@ WP_API const char* wp_cuda_device_get_name(int ordinal);
 WP_API int wp_cuda_device_get_arch(int ordinal);
 WP_API int wp_cuda_device_get_sm_count(int ordinal);
 WP_API int wp_cuda_device_get_max_shared_memory(int ordinal);
+// Internal GEMM compiler limits: shared bytes/SM, reserved bytes/CTA, threads/SM,
+// CTAs/SM, warp size, and shared allocation granularity. False leaves limits unchanged.
+WP_API bool wp_cuda_device_get_gemm_launch_limits(int ordinal, int limits[6]);
 WP_API void wp_cuda_device_get_uuid(int ordinal, char uuid[16]);
 WP_API int wp_cuda_device_get_pci_domain_id(int ordinal);
 WP_API int wp_cuda_device_get_pci_bus_id(int ordinal);
