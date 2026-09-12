@@ -117,10 +117,9 @@ def test_tile_static_shared_memory_query(test, device):
 
     static_bytes = warp_context.runtime.core.wp_cuda_get_kernel_static_shared_memory(device.context, hooks.forward)
 
-    # every tile kernel reserves at least one unsigned int per thread for smem_base
-    # (warp/native/tile.h); kernels pulling in tile_cholesky.h, bvh.h, tile_mesh.h, or
-    # tile_radix_sort.h reserve more on top of that
-    test.assertGreaterEqual(static_bytes, 4 * BLOCK_DIM)
+    # The CUDA allocator reserves one unsigned int per warp. Other tile
+    # primitives can reserve additional static shared memory.
+    test.assertGreaterEqual(static_bytes, 4 * ((BLOCK_DIM + 31) // 32))
     test.assertLess(static_bytes, device.max_shared_memory_per_block)
 
     # a null kernel handle reports failure rather than a plausible-looking zero

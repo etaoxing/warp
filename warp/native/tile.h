@@ -1169,13 +1169,15 @@ private:
 #endif
 #endif
 
-    // we maintain a per-thread offset into dynamic
-    // shared memory that allows us to keep track of
-    // current use across dynamic function calls
+    // Track the current dynamic shared-memory offset across function calls.
+    // CPU lanes use independent entries; cooperative CUDA lanes share one
+    // entry per warp.
     static inline CUDA_CALLABLE unsigned int* get_smem_base()
     {
 #if defined(__CUDA_ARCH__)
-        __shared__ unsigned int smem_base[WP_TILE_BLOCK_DIM];
+        // Cooperative tile allocations are uniform across the block. Keep one
+        // allocator offset per warp instead of reserving one per thread.
+        __shared__ unsigned int smem_base[(WP_TILE_BLOCK_DIM + 31) / 32];
         return smem_base;
 #elif defined(WP_ENABLE_TILES_IN_STACK_MEMORY)
         return shared_tile_storage->smem_base;
@@ -1225,14 +1227,24 @@ public:
     {
         unsigned int* smem_base = get_smem_base();
 
+#if defined(__CUDA_ARCH__)
+        if ((WP_TILE_THREAD_IDX & 31) == 0)
+            smem_base[WP_TILE_THREAD_IDX / 32] = 0;
+#else
         smem_base[WP_TILE_THREAD_IDX] = 0;
+#endif
     }
 
     static inline CUDA_CALLABLE void check()
     {
         unsigned int* smem_base = get_smem_base();
 
+#if defined(__CUDA_ARCH__)
+        if ((WP_TILE_THREAD_IDX & 31) == 0)
+            assert(smem_base[WP_TILE_THREAD_IDX / 32] == 0);
+#else
         assert(smem_base[WP_TILE_THREAD_IDX] == 0);
+#endif
     }
 
     static inline CUDA_CALLABLE void* alloc(int num_bytes)
@@ -1240,12 +1252,19 @@ public:
         unsigned int* smem_base = get_smem_base();
         char* dynamic_smem_base = get_dynamic_smem_base();
 
+#if defined(__CUDA_ARCH__)
+        unsigned int offset = 0;
+        if ((WP_TILE_THREAD_IDX & 31) == 0) {
+            const int warp_index = WP_TILE_THREAD_IDX / 32;
+            offset = smem_base[warp_index];
+            smem_base[warp_index] += tile_align(num_bytes);
+        }
+        offset = __shfl_sync(__activemask(), offset, 0);
+#else
         const unsigned int offset = smem_base[WP_TILE_THREAD_IDX];
 
-        // one entry per-thread so no need for synchronization
         smem_base[WP_TILE_THREAD_IDX] += tile_align(num_bytes);
 
-#if !defined(__CUDA_ARCH__)
         assert(smem_base[WP_TILE_THREAD_IDX] <= WP_MAX_CPU_SHARED);
 #endif
 
